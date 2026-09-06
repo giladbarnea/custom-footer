@@ -1,0 +1,58 @@
+{
+  "name": "@giladbarnea/pi-custom-footer",
+  "version": "0.1.0",
+  "description": "Context, cache, cost, and loaded skills at a glance in Pi.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Gilad Barnea",
+  "keywords": [
+    "pi-package",
+    "pi",
+    "pi-coding-agent",
+    "footer",
+    "context",
+    "cache"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/giladbarnea/custom-footer.git"
+  },
+  "homepage": "https://github.com/giladbarnea/custom-footer",
+  "bugs": {
+    "url": "https://github.com/giladbarnea/custom-footer/issues"
+  },
+  "files": [
+    "index.ts",
+    "skill-tracker.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node tests/skills.mjs && node tests/cache.mjs && node tests/load.mjs",
+    "check": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": ">=0.84.2",
+    "@earendil-works/pi-coding-agent": ">=0.84.2",
+    "@earendil-works/pi-tui": ">=0.84.2"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "0.85.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
+    "@earendil-works/pi-tui": "0.85.1",
+    "@types/node": "^22.0.0",
+    "jiti": "^2.7.0",
+    "typescript": "~5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  }
+}
