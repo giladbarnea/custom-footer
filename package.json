@@ -1,6 +1,6 @@
 {
   "name": "@giladbarnea/pi-custom-footer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Context, cache, cost, and loaded skills at a glance in Pi.",
   "type": "module",
   "license": "MIT",
