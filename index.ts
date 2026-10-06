@@ -1,22 +1,85 @@
-/** Show session context, cache usage, cost, and loaded skills around the editor. */
+/**
+ * Show session context, cache usage, cost, and loaded skills around the editor.
+ *
+ * Skill row. Each loaded skill shows its name and its token age: how far the
+ * context has grown since the first response that saw the skill. The age tells
+ * how deep in the context the skill now sits. On a terminal of 40 rows or
+ * fewer, the skills get at most four rows. When they do not fit, the row gives
+ * up the least important thing left, one step at a time:
+ *   1. The token ages.
+ *   2. The separators between skills.
+ *   3. The middle of the longest names, one character per step, down to four
+ *      characters on each side of the ellipsis. Names shorter than ten
+ *      characters never change.
+ *   4. Last, three rows in the most compact layout plus a "+N skills" count.
+ * Knowing which skills are loaded matters more than any detail about them, so
+ * hiding a skill is the last resort. The Claude Code status line in
+ * ~/.claude/statusline.sh uses the same order.
+ *
+ * Known gaps reviewed September 30, 2026, against Pi 0.99.0:
+ * - Costs omit codemode and nested-model usage recorded on tool results.
+ * - Loaded skills omit successful reads recorded in tool-result nestedCalls.
+ * - The header omits the routed physical model and thinking level.
+ * - After compaction, unknown usage falls back to the selected model's window
+ *   or 200k, ignoring the known physical window from getContextUsage().
+ */
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 
 import { getLoadedSkills, type SkillLocation } from "./skill-tracker.ts";
 
 // ── Layout constants ────────────────────────────────────────────────────────
 
 const NARROW_WIDTH = 56;
+const SHORT_TERMINAL_HEIGHT = 40;
+const SKILL_COLLAPSE_ROW_THRESHOLD = 4;
+const COLLAPSED_SKILL_ROWS = 3;
+// A truncated name keeps four characters on each side of the ellipsis.
+const MIN_TRUNCATED_NAME_LENGTH = 9;
 const NARROW_SEPARATOR = " ";
 const WIDE_SEPARATOR = " · ";
-const CONTEXT_GAUGE_SYMBOLS = [" ", "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
+const CONTEXT_GAUGE_SYMBOLS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const CONTEXT_GAUGE_STEP_COUNT = CONTEXT_GAUGE_SYMBOLS.length;
-const CONTEXT_MUTED_THRESHOLD = 40;
-const CONTEXT_WARNING_THRESHOLD = 65;
-const CONTEXT_ERROR_THRESHOLD = 85;
 const CACHE_MISS_NOISE_FLOOR_TOKENS = 1_024;
-const ANSI_RESET = "\x1b[0m";
+// Match Theme.fg, which resets the foreground only. A full reset would punch a
+// hole in any background the caller has already opened, such as the cwd pill.
+const ANSI_FG_RESET = "\x1b[39m";
+const QUIET_BLEND = 0.38;
+
+// ── Colour rules ────────────────────────────────────────────────────────────
+// Hue means one of two things here and nothing else.
+//
+// 1. A RAMP is a measurement. Its colour moves with the value, and it is loud
+//    only where there is something to act on. CONTEXT_STOPS runs quiet to loud
+//    as the window fills. CACHE_STOPS is that same scale mirrored, because a
+//    full cache is the good end and an empty one is the problem.
+// 2. A FAMILY is a category. One token per kind of fact, held everywhere it
+//    appears, so the shape of the footer becomes learnable:
+//        accent         place    cwd, branch, dirty marker
+//        warning        spend    total cost, cost per turn
+//        syntaxKeyword  machine  model name; thinking has its own theme ramp
+//        mdCode         skills   loaded skill names
+//        dim / muted    labels, units, reference figures, session id
+//
+// Every colour resolves through the theme. No literal colours below this line.
+
+type Stop = { at: number; token: string; quiet?: boolean };
+
+const CONTEXT_STOPS: readonly Stop[] = [
+	{ at: 0, token: "success", quiet: true },
+	{ at: 40, token: "success" },
+	{ at: 70, token: "warning" },
+	{ at: 100, token: "error" },
+];
+
+/** The context ramp mirrored, so a full cache is quiet and an empty one is loud. */
+const CACHE_STOPS: readonly Stop[] = CONTEXT_STOPS.map((stop) => ({ ...stop, at: 100 - stop.at })).reverse();
+
+const PLACE_TOKEN = "accent";
+const SPEND_TOKEN = "warning";
+const MACHINE_TOKEN = "syntaxKeyword";
+const SKILL_TOKEN = "mdCode";
 
 const THINKING_LEVELS: Record<string, { full: string; short: string; token: string }> = {
 	off: { full: "off", short: "o", token: "dim" },
@@ -38,9 +101,15 @@ function joinedLine(parts: string[], separator: string): string {
 	return ` ${parts.join(separator)}`;
 }
 
-function wrapJoinedLines(parts: string[], width: number, separator: string): string[] {
+type WrappedLine = { text: string; partCount: number };
+
+/** Wrap whole parts and retain the number of parts in each row.
+ * @example
+ * wrapJoinedLines(["one", "two"], 6, " · ") // [{ text: " one", partCount: 1 }, { text: " two", partCount: 1 }]
+ */
+function wrapJoinedLines(parts: string[], width: number, separator: string): WrappedLine[] {
 	if (parts.length === 0) return [];
-	const lines: string[] = [];
+	const lines: WrappedLine[] = [];
 	const remainingParts = [...parts];
 	while (remainingParts.length > 0) {
 		const lineParts: string[] = [];
@@ -50,9 +119,40 @@ function wrapJoinedLines(parts: string[], width: number, separator: string): str
 			lineParts.push(remainingParts.shift()!);
 			if (visibleWidth(joinedLine(lineParts, separator)) >= width) break;
 		}
-		lines.push(truncateToWidth(joinedLine(lineParts, separator), width));
+		lines.push({ text: truncateToWidth(joinedLine(lineParts, separator), width), partCount: lineParts.length });
 	}
 	return lines;
+}
+
+/** Cut the middle of a name down to maxLength, marking the cut with an ellipsis.
+ * @example
+ * middleTruncate("cautious-refactor", 9) // "caut…ctor"
+ */
+function middleTruncate(name: string, maxLength: number): string {
+	if (name.length <= maxLength) return name;
+	const kept = maxLength - 1;
+	return `${name.slice(0, Math.ceil(kept / 2))}…${name.slice(name.length - Math.floor(kept / 2))}`;
+}
+
+type SkillLayout = { ages: boolean; separator: string; maxNameLength: number };
+
+/** Skill row layouts, fullest first. Each step gives up the least important
+ * thing left: first the token ages, then the separators, then one more
+ * character of the longest names.
+ * @example
+ * skillLayouts(3).length // 3
+ */
+function skillLayouts(longestName: number): SkillLayout[] {
+	const truncations = Array.from(
+		{ length: Math.max(0, longestName - MIN_TRUNCATED_NAME_LENGTH) },
+		(_, index) => ({ ages: false, separator: NARROW_SEPARATOR, maxNameLength: longestName - 1 - index }),
+	);
+	return [
+		{ ages: true, separator: WIDE_SEPARATOR, maxNameLength: longestName },
+		{ ages: false, separator: WIDE_SEPARATOR, maxNameLength: longestName },
+		{ ages: false, separator: NARROW_SEPARATOR, maxNameLength: longestName },
+		...truncations,
+	];
 }
 
 function renderExtensionStatuses(
@@ -122,7 +222,6 @@ function getSkillLocations(pi: ExtensionAPI): SkillLocation[] {
 // ── ANSI color helpers ──────────────────────────────────────────────────────
 
 type RgbColor = { red: number; green: number; blue: number };
-type RgbTokens = { dim: RgbColor | null; muted: RgbColor | null; warning: RgbColor | null; error: RgbColor | null };
 
 function ansi256ToRgb(index: number): RgbColor {
 	const basicPalette: RgbColor[] = [
@@ -167,7 +266,12 @@ function ansiCodeToRgb(code: number): RgbColor | null {
 }
 
 function getThemeTokenRgb(theme: any, token: string): RgbColor | null {
-	const themed = theme.fg(token, "x");
+	let themed: string;
+	try {
+		themed = typeof theme.getFgAnsi === "function" ? theme.getFgAnsi(token) : theme.fg(token, "x");
+	} catch {
+		return null;
+	}
 	const matches = [...themed.matchAll(/\x1b\[([0-9;]+)m/g)];
 	for (let i = matches.length - 1; i >= 0; i -= 1) {
 		const codes = matches[i]?.[1]?.split(";").map(Number) ?? [];
@@ -199,38 +303,65 @@ function blendRgb(start: RgbColor, end: RgbColor, ratio: number): RgbColor {
 }
 
 function colorizeRgb(text: string, rgb: RgbColor): string {
-	return `\x1b[38;2;${rgb.red};${rgb.green};${rgb.blue}m${text}${ANSI_RESET}`;
+	return `\x1b[38;2;${rgb.red};${rgb.green};${rgb.blue}m${text}${ANSI_FG_RESET}`;
 }
 
-function renderContextUsage(
-	theme: any,
-	pct: number,
-	text: string,
-	rgbTokens: RgbTokens,
-): string {
-	const { dim, muted, warning, error } = rgbTokens;
-	if (!dim || !muted || !warning || !error) {
-		if (pct >= CONTEXT_ERROR_THRESHOLD) return theme.fg("error", text);
-		if (pct >= CONTEXT_WARNING_THRESHOLD) return theme.fg("warning", text);
-		if (pct >= CONTEXT_MUTED_THRESHOLD) return theme.fg("muted", text);
-		return theme.fg("dim", text);
-	}
-	if (pct < CONTEXT_MUTED_THRESHOLD) {
-		return colorizeRgb(text, blendRgb(dim, muted, pct / CONTEXT_MUTED_THRESHOLD));
-	}
-	if (pct < CONTEXT_WARNING_THRESHOLD) {
-		return colorizeRgb(
-			text,
-			blendRgb(muted, warning, (pct - CONTEXT_MUTED_THRESHOLD) / (CONTEXT_WARNING_THRESHOLD - CONTEXT_MUTED_THRESHOLD)),
-		);
-	}
-	if (pct < CONTEXT_ERROR_THRESHOLD) {
-		return colorizeRgb(
-			text,
-			blendRgb(warning, error, (pct - CONTEXT_WARNING_THRESHOLD) / (CONTEXT_ERROR_THRESHOLD - CONTEXT_WARNING_THRESHOLD)),
-		);
-	}
-	return theme.fg("error", text);
+function nearestStop(stops: readonly Stop[], value: number): Stop {
+	return stops.reduce((best, stop) =>
+		Math.abs(stop.at - value) < Math.abs(best.at - value) ? stop : best,
+	);
+}
+
+export interface Painter {
+	/** A family colour, held wherever that kind of fact appears. */
+	token(name: string, text: string): string;
+	/** The same family colour, receded, for a figure subordinate to another. */
+	quiet(name: string, text: string): string;
+	/** A measurement, coloured by where it sits on its own scale. */
+	ramp(stops: readonly Stop[], value: number, text: string): string;
+}
+
+/**
+ * Resolve every colour the footer needs from the live theme.
+ *
+ * A 256-colour terminal cannot render a blend, so both the ramp and the quiet
+ * variant fall back to the nearest whole theme token rather than emitting
+ * truecolor the terminal would drop.
+ */
+function makePainter(theme: any): Painter {
+	const blendable = theme.getColorMode?.() !== "256color";
+	const resolved = new Map<string, RgbColor | null>();
+	const rgbOf = (name: string): RgbColor | null => {
+		if (!resolved.has(name)) resolved.set(name, getThemeTokenRgb(theme, name));
+		return resolved.get(name) ?? null;
+	};
+	const quietRgb = (name: string): RgbColor | null => {
+		const base = rgbOf(name);
+		const dim = rgbOf("dim");
+		return base && dim ? blendRgb(base, dim, QUIET_BLEND) : null;
+	};
+	const stopRgb = (stop: Stop): RgbColor | null => (stop.quiet ? quietRgb(stop.token) : rgbOf(stop.token));
+
+	return {
+		token: (name, text) => theme.fg(name, text),
+		quiet(name, text) {
+			const rgb = blendable ? quietRgb(name) : null;
+			return rgb ? colorizeRgb(text, rgb) : theme.fg("dim", text);
+		},
+		ramp(stops, value, text) {
+			const clamped = Math.min(Math.max(value, stops[0]!.at), stops[stops.length - 1]!.at);
+			for (let i = 0; i < stops.length - 1; i += 1) {
+				const low = stops[i]!;
+				const high = stops[i + 1]!;
+				if (clamped > high.at) continue;
+				const lowRgb = stopRgb(low);
+				const highRgb = stopRgb(high);
+				if (!blendable || !lowRgb || !highRgb) return theme.fg(nearestStop(stops, clamped).token, text);
+				return colorizeRgb(text, blendRgb(lowRgb, highRgb, (clamped - low.at) / (high.at - low.at)));
+			}
+			return theme.fg(stops[stops.length - 1]!.token, text);
+		},
+	};
 }
 
 function ctxGauge(pct: number): string {
@@ -397,48 +528,64 @@ export default function (pi: ExtensionAPI) {
 		return snapshot;
 	}
 
-	function renderAbove(width: number, theme: any): string[] {
+	function renderAbove(width: number, terminalHeight: number, theme: Theme): string[] {
 		if (!currentCtx) return [];
+		const paint = makePainter(theme);
 		const model = formatModel(currentCtx.model);
 		const thinking = renderThinkingLabel(theme, thinkingLevel, true);
 		const sessionParts = getSnapshot().sessionParts.map((part) => theme.fg(part.token, part.text));
-		const skillPills = loadedSkills.map(({ name, tokenAge }) => {
-			const nameText = theme.fg("mdHeading", ` ${name}`);
-			const ageText = tokenAge === null ? "" : theme.fg("muted", ` -${formatTokens(tokenAge)}`);
-			return theme.bg("toolPendingBg", `${nameText}${ageText} `);
-		});
-		const parts = [theme.fg("accent", theme.bold(model))];
+		// No background here: the cwd pill is the one filled element in the whole
+		// footer, and a second pill style would leave neither of them the anchor.
+		const renderSkillLines = (layout: SkillLayout) => wrapJoinedLines(
+			loadedSkills.map(({ name, tokenAge }) => {
+				const nameText = paint.token(SKILL_TOKEN, middleTruncate(name, layout.maxNameLength));
+				const ageText = layout.ages && tokenAge !== null ? theme.fg("dim", ` -${formatTokens(tokenAge)}`) : "";
+				return `${nameText}${ageText}`;
+			}),
+			width,
+			theme.fg("dim", layout.separator),
+		);
+		// Weight is reserved for the pill and for thinking at high and above, so
+		// the model carries its family hue and nothing more.
+		const parts = [paint.token(MACHINE_TOKEN, model)];
 		if (thinking) parts.push(thinking);
 		parts.push(...sessionParts);
 		const separator = theme.fg("dim", WIDE_SEPARATOR);
+		// A short terminal takes the fullest layout that fits the row limit. Hiding
+		// skills behind a count is the last resort, after the most compact layout.
+		const shortTerminal = terminalHeight <= SHORT_TERMINAL_HEIGHT;
+		const layouts = skillLayouts(Math.max(0, ...loadedSkills.map(({ name }) => name.length)));
+		const candidates = shortTerminal ? layouts : layouts.slice(0, 1);
+		const layout = candidates.find((candidate) => renderSkillLines(candidate).length <= SKILL_COLLAPSE_ROW_THRESHOLD) ?? candidates.at(-1)!;
+		const skillLines = renderSkillLines(layout);
+		const collapseSkills = shortTerminal && skillLines.length > SKILL_COLLAPSE_ROW_THRESHOLD;
+		const visibleSkillLines = collapseSkills ? skillLines.slice(0, COLLAPSED_SKILL_ROWS) : skillLines;
+		const hiddenSkillCount = skillLines.slice(visibleSkillLines.length).reduce((count, line) => count + line.partCount, 0);
+		const overflowLines = hiddenSkillCount === 0 ? [] : [truncateToWidth(theme.fg("dim", ` +${hiddenSkillCount} skills`), width)];
 		return [
-			...wrapJoinedLines(parts, width, separator),
-			...wrapJoinedLines(skillPills, width, separator),
+			...wrapJoinedLines(parts, width, separator).map((line) => line.text),
+			...visibleSkillLines.map((line) => line.text),
+			...overflowLines,
 		];
 	}
 
 	function renderBelow(width: number, theme: any): string[] {
 		if (!currentCtx) return [];
 		const { stats, context: { pct, window, tokens } } = getSnapshot();
-		const rgbTokens: RgbTokens = {
-			dim: getThemeTokenRgb(theme, "dim"),
-			muted: getThemeTokenRgb(theme, "muted"),
-			warning: getThemeTokenRgb(theme, "warning"),
-			error: getThemeTokenRgb(theme, "error"),
-		};
+		const paint = makePainter(theme);
 		return isNarrow(width)
-			? renderFooterNarrow(width, theme, stats, pct, window, rgbTokens)
-			: renderFooterWide(width, theme, stats, pct, window, tokens, rgbTokens);
+			? renderFooterNarrow(width, theme, paint, stats, pct, window)
+			: renderFooterWide(width, theme, paint, stats, pct, window, tokens);
 	}
 
 	function renderFooterWide(
 		width: number,
 		theme: any,
+		paint: Painter,
 		stats: SessionStats,
 		pct: number,
 		window: number,
 		tokens: number,
-		rgbTokens: RgbTokens,
 	): string[] {
 		const separator = theme.fg("dim", WIDE_SEPARATOR);
 		const label = (text: string) => theme.fg("dim", text.padEnd(8));
@@ -446,36 +593,47 @@ export default function (pi: ExtensionAPI) {
 
 		const locationParts: string[] = [];
 		if (gitBranch) {
-			const dirty = gitDirty ? theme.fg("warning", "*") : "";
-			locationParts.push(`${theme.fg("accent", ` ${gitBranch}`)}${dirty}`);
+			// A dirty worktree is a property of the place, not a cost, so it stays
+			// in the place family and leaves `warning` meaning spend alone.
+			const dirty = gitDirty ? paint.token(PLACE_TOKEN, "*") : "";
+			locationParts.push(`${paint.token(PLACE_TOKEN, ` ${gitBranch}`)}${dirty}`);
 		}
-		locationParts.push(theme.bg("selectedBg", theme.fg("text", ` ${currentDirectoryName(cwd)}/ `)));
+		locationParts.push(theme.bg("selectedBg", paint.token(PLACE_TOKEN, theme.bold(` ${currentDirectoryName(cwd)}/ `))));
 		const locationLine = truncateToWidth(` ${locationParts.join(separator)}`, width);
 
-		const gauge = renderContextUsage(theme, pct, `${ctxGauge(pct)} ${Math.round(pct)}%`, rgbTokens);
-		const contextValue = theme.fg("text", `${formatTokens(tokens)} / ${formatTokens(window)} tokens`);
+		const gauge = paint.ramp(CONTEXT_STOPS, pct, `${ctxGauge(pct)} ${Math.round(pct)}%`);
+		// Colour the figure that moves and leave its reference quiet, so the eye
+		// lands on the reading rather than on the window size beside it.
+		const contextValue =
+			paint.ramp(CONTEXT_STOPS, pct, formatTokens(tokens)) +
+			theme.fg("dim", ` / ${formatTokens(window)} tokens`);
 		const usingSubscription = currentCtx.model
 			? currentCtx.modelRegistry?.isUsingOAuth?.(currentCtx.model)
 			: false;
-		const costText = theme.fg("warning", `$${formatCost(stats.totalCost)}`);
+		const costText = paint.token(SPEND_TOKEN, `$${formatCost(stats.totalCost)}`);
 		const subLabel = usingSubscription ? theme.fg("muted", " sub") : "";
-		const perTurn = theme.fg("dim", `$${formatCost(stats.averageCostPerTurn)}/turn`);
+		const perTurn = paint.quiet(SPEND_TOKEN, `$${formatCost(stats.averageCostPerTurn)}/turn`);
 		const contextLine = truncateToWidth(
 			` ${label("context")}${gauge}  ${contextValue}${separator}${costText}${subLabel}  ${perTurn}`,
 			width,
 		);
 
+		// A hit rate is a measurement, so it rides the ramp. The old cliff at 80%
+		// made 79% and 20% look identical and threw the reading away.
 		const sessionHit = stats.sessionCacheHitRate;
-		const sessionHitToken = sessionHit != null && sessionHit >= 80 ? "success" : "muted";
-		const sessionHitText = sessionHit != null ? `${sessionHit.toFixed(1)}% session` : "no cache yet";
+		const sessionHitText = sessionHit != null
+			? paint.ramp(CACHE_STOPS, sessionHit, `${sessionHit.toFixed(1)}% session`)
+			: theme.fg("dim", "no cache yet");
 		const latestHit = stats.latestCacheHitRate;
 		const latestText = stats.latestCacheMissTokens != null
-			? theme.fg("warning", `latest miss ${formatTokens(stats.latestCacheMissTokens)} re-billed`)
+			? theme.fg("error", `latest miss ${formatTokens(stats.latestCacheMissTokens)} re-billed`)
 			: latestHit != null
-				? theme.fg(latestHit >= 80 ? "success" : "muted", `latest ${latestHit.toFixed(1)}%`)
+				? paint.ramp(CACHE_STOPS, latestHit, `latest ${latestHit.toFixed(1)}%`)
 				: null;
-		const reuseSplit = theme.fg("dim", `${formatTokens(stats.totalReused)} reused / ${formatTokens(stats.totalFresh)} new`);
-		const cacheParts = [theme.fg(sessionHitToken, sessionHitText), latestText, reuseSplit].filter(Boolean);
+		const reuseSplit =
+			paint.ramp(CACHE_STOPS, sessionHit ?? 0, formatTokens(stats.totalReused)) +
+			theme.fg("dim", ` reused / ${formatTokens(stats.totalFresh)} new`);
+		const cacheParts = [sessionHitText, latestText, reuseSplit].filter(Boolean);
 		const cacheLine = truncateToWidth(` ${label("cache")}${cacheParts.join(separator)}`, width);
 
 		return [locationLine, contextLine, cacheLine];
@@ -484,28 +642,30 @@ export default function (pi: ExtensionAPI) {
 	function renderFooterNarrow(
 		width: number,
 		theme: any,
+		paint: Painter,
 		stats: SessionStats,
 		pct: number,
 		window: number,
-		rgbTokens: RgbTokens,
 	): string[] {
 		const cwd = currentCtx.cwd || ".";
 		const locationParts: string[] = [];
 		if (gitBranch) {
-			const dirty = gitDirty ? theme.fg("warning", "*") : "";
-			locationParts.push(`${theme.fg("accent", gitBranch)}${dirty}`);
+			const dirty = gitDirty ? paint.token(PLACE_TOKEN, "*") : "";
+			locationParts.push(`${paint.token(PLACE_TOKEN, gitBranch)}${dirty}`);
 		}
-		locationParts.push(theme.fg("text", `${currentDirectoryName(cwd)}/`));
+		// The pill earns its two columns most here: a split pane is where you are
+		// least sure which session you are looking at.
+		locationParts.push(theme.bg("selectedBg", paint.token(PLACE_TOKEN, theme.bold(` ${currentDirectoryName(cwd)}/ `))));
 		const locationLine = truncateToWidth(` ${locationParts.join(NARROW_SEPARATOR)}`, width);
 
-		const gauge = renderContextUsage(theme, pct, `${Math.round(pct)}%/${formatTokens(window)}`, rgbTokens);
+		const gauge = paint.ramp(CONTEXT_STOPS, pct, `${Math.round(pct)}%/${formatTokens(window)}`);
 		const latestHit = stats.latestCacheHitRate;
 		const cache = stats.latestCacheMissTokens != null
-			? theme.fg("warning", `miss ${formatTokens(stats.latestCacheMissTokens)}`)
+			? theme.fg("error", `miss ${formatTokens(stats.latestCacheMissTokens)}`)
 			: latestHit != null
-				? theme.fg("muted", `latest ${Math.round(latestHit)}%`)
+				? paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`)
 				: "";
-		const cost = theme.fg("warning", `$${formatCost(stats.totalCost)}`);
+		const cost = paint.token(SPEND_TOKEN, `$${formatCost(stats.totalCost)}`);
 		const dataLine = truncateToWidth(` ${[gauge, cache, cost].filter(Boolean).join(NARROW_SEPARATOR)}`, width);
 
 		return [locationLine, dataLine];
@@ -577,11 +737,11 @@ export default function (pi: ExtensionAPI) {
 
 		ctx.ui.setWidget(
 			"custom-footer-above",
-			(_tui: any, theme: any) => ({
+			(tui: TUI, theme: Theme) => ({
 				dispose() {},
 				invalidate() {},
 				render(width: number): string[] {
-					return renderAbove(width, theme);
+					return renderAbove(width, tui.terminal.rows, theme);
 				},
 			}),
 			{ placement: "aboveEditor" },

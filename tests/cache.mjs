@@ -18,7 +18,7 @@ let contextWindow = 200_000;
 let branch = [];
 let messages = [];
 const theme = { fg: (_token, text) => text, bg: (_token, text) => text, bold: (text) => text };
-const tui = { requestRender() {} };
+const tui = { terminal: { rows: 60 }, requestRender() {} };
 const extensionStatuses = new Map();
 const footerData = { onBranchChange: () => () => {}, getExtensionStatuses: () => extensionStatuses };
 const context = {
@@ -51,6 +51,7 @@ let footer = footerFactory(tui, theme, footerData);
 const render = (width = 200) => [...header.render(width), ...footer.render(width)].join("\n");
 assert.match(render(), /Original/);
 assert.match(render(), /60%/);
+tui.terminal.rows = 40;
 const afterFirstRender = { ...calls };
 for (const width of [200, 40, 160, 56, 200]) render(width);
 assert.deepEqual(calls, afterFirstRender, "Unchanged redraws and resizes must not read history or SDK usage");

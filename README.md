@@ -27,6 +27,8 @@ Below the editor, see:
 
 The layout follows your Pi theme and condenses to two footer lines in narrow panes.
 
+On terminals with 40 rows or fewer, skills get at most four rows. To fit, the row first drops token ages, then separators, then shortens long names in the middle (`caut…ctor`). Only then does it show three rows plus a hidden-skill count.
+
 **Resize without rescanning the conversation.** The header and footer share cached values. Session changes refresh them, including forks and compaction.
 
 Skill age measures context-token growth since the first response after a skill load. A cache miss compares consecutive prompt sizes with reported reuse. Costs use the model’s reported pricing, including when you use a subscription.
