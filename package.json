@@ -28,7 +28,7 @@
     "LICENSE"
   ],
   "scripts": {
-    "test": "node tests/skills.mjs && node tests/cache.mjs && node tests/load.mjs",
+    "test": "node tests/skills.mjs && node tests/cache.mjs && node tests/layout.mjs && node tests/load.mjs",
     "check": "tsc --noEmit"
   },
   "engines": {

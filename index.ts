@@ -31,7 +31,6 @@ import { getLoadedSkills, type SkillLocation } from "./skill-tracker.ts";
 
 // ── Layout constants ────────────────────────────────────────────────────────
 
-const NARROW_WIDTH = 56;
 const SHORT_TERMINAL_HEIGHT = 40;
 const SKILL_COLLAPSE_ROW_THRESHOLD = 4;
 const COLLAPSED_SKILL_ROWS = 3;
@@ -39,6 +38,7 @@ const COLLAPSED_SKILL_ROWS = 3;
 const MIN_TRUNCATED_NAME_LENGTH = 9;
 const NARROW_SEPARATOR = " ";
 const WIDE_SEPARATOR = " · ";
+const BRANCH_GLYPH = "";
 const CONTEXT_GAUGE_SYMBOLS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const CONTEXT_GAUGE_STEP_COUNT = CONTEXT_GAUGE_SYMBOLS.length;
 const CACHE_MISS_NOISE_FLOOR_TOKENS = 1_024;
@@ -91,25 +91,76 @@ const THINKING_LEVELS: Record<string, { full: string; short: string; token: stri
 	max: { full: "max", short: "mx", token: "thinkingMax" },
 };
 
-// ── Generic helpers ─────────────────────────────────────────────────────────
+// ── Shrink ladders ──────────────────────────────────────────────────────────
+// The same approach as the Claude Code status line in ~/.claude/statusline.sh.
+// Each region packs its rows onto the fewest lines it can, at the fullest state
+// that reaches that count. State N applies the first N steps. Each phase gives
+// up a kind of detail that matters more than the phase before it, and within a
+// phase the least needed fact goes first.
 
-function isNarrow(width: number): boolean {
-	return width <= NARROW_WIDTH;
-}
+type Form = "full" | "short" | "bare" | "hidden";
+/** A fact's text in each form it has. A step names only forms its fact has. */
+type FactForms = { full: string } & Partial<Record<"short" | "bare", string>>;
+/** One row of facts. Each inner list is one group, joined by the narrow joiner. */
+type Row<Key extends string> = readonly (readonly Key[])[];
+type Ladder<Key extends string> = {
+	rows: readonly Row<Key>[];
+	steps: readonly (readonly [Key | "spacing", Form])[];
+};
+type HeaderFact = "model" | "thinking" | "sessionName" | "sessionId";
+type FooterFact = "branch" | "cwd" | "context" | "tokens" | "cost" | "perTurn" | "cacheSession" | "latest" | "reuse";
+
+const SPACING = {
+	full: { separator: WIDE_SEPARATOR, joiner: "  " },
+	bare: { separator: NARROW_SEPARATOR, joiner: " " },
+};
+
+const HEADER_LADDER: Ladder<HeaderFact> = {
+	rows: [[["model"], ["thinking"], ["sessionName"], ["sessionId"]]],
+	steps: [
+		// 1. Narrow the separators to one space.
+		["spacing", "bare"],
+		// 2. Shorten the thinking level.
+		["thinking", "short"],
+		// 3. Trim the session id to its first two segments. Last, because the
+		//    full id is what finds the session again.
+		["sessionId", "short"],
+	],
+};
+
+const FOOTER_LADDER: Ladder<FooterFact> = {
+	rows: [
+		[["branch"], ["cwd"]],
+		[["context", "tokens"], ["cost", "perTurn"]],
+		[["cacheSession"], ["latest"], ["reuse"]],
+	],
+	steps: [
+		// 1. Drop the labels the values already imply.
+		["tokens", "short"], ["context", "bare"], ["cacheSession", "bare"],
+		// 2. Shorten the readings: the latest cache figure, then the cost, rounded twice.
+		["latest", "short"], ["cost", "short"], ["cost", "bare"],
+		// 3. Remove whitespace: the padding inside the cwd pill, then the separators.
+		["cwd", "short"], ["spacing", "bare"],
+		// 4. Drop the branch icon.
+		["branch", "bare"],
+		// 5. Hide whole facts. The cost per turn goes last, because seeing what
+		//    each turn costs is half of what the footer is for.
+		["reuse", "hidden"], ["cacheSession", "hidden"], ["tokens", "hidden"], ["perTurn", "hidden"],
+	],
+};
+
+// ── Generic helpers ─────────────────────────────────────────────────────────
 
 function joinedLine(parts: string[], separator: string): string {
 	return ` ${parts.join(separator)}`;
 }
 
-type WrappedLine = { text: string; partCount: number };
-
-/** Wrap whole parts and retain the number of parts in each row.
+/** Wrap whole parts into lines narrower than width. A part wider than width takes a line alone.
  * @example
- * wrapJoinedLines(["one", "two"], 6, " · ") // [{ text: " one", partCount: 1 }, { text: " two", partCount: 1 }]
+ * wrapParts(["one", "two"], 6, " · ") // [["one"], ["two"]]
  */
-function wrapJoinedLines(parts: string[], width: number, separator: string): WrappedLine[] {
-	if (parts.length === 0) return [];
-	const lines: WrappedLine[] = [];
+function wrapParts(parts: string[], width: number, separator: string): string[][] {
+	const lines: string[][] = [];
 	const remainingParts = [...parts];
 	while (remainingParts.length > 0) {
 		const lineParts: string[] = [];
@@ -119,9 +170,56 @@ function wrapJoinedLines(parts: string[], width: number, separator: string): Wra
 			lineParts.push(remainingParts.shift()!);
 			if (visibleWidth(joinedLine(lineParts, separator)) >= width) break;
 		}
-		lines.push({ text: truncateToWidth(joinedLine(lineParts, separator), width), partCount: lineParts.length });
+		lines.push(lineParts);
 	}
 	return lines;
+}
+
+type WrappedLine = { text: string; partCount: number };
+
+/** Wrap whole parts and retain the number of parts in each row.
+ * @example
+ * wrapJoinedLines(["one", "two"], 6, " · ") // [{ text: " one", partCount: 1 }, { text: " two", partCount: 1 }]
+ */
+function wrapJoinedLines(parts: string[], width: number, separator: string): WrappedLine[] {
+	return wrapParts(parts, width, separator).map((lineParts) => ({
+		text: truncateToWidth(joinedLine(lineParts, separator), width),
+		partCount: lineParts.length,
+	}));
+}
+
+/** Pack rows onto lines. Rows share a line when they fit, and a row breaks only
+ * when it is wider than the width, so a fact moves between lines only with its whole row.
+ * @example
+ * packRows([["a", "b"], ["c"]], 20, " · ") // [" a · b · c"]
+ */
+function packRows(rows: string[][], width: number, separator: string): string[] {
+	const rowLines = rows.flatMap((row) => wrapParts(row, width, separator).map((lineParts) => lineParts.join(separator)));
+	return wrapJoinedLines(rowLines, width, separator).map((line) => line.text);
+}
+
+/** The ladder's fullest state among those that pack the facts onto the fewest lines.
+ * A fact missing from `facts` is left out.
+ */
+function fitFacts<Key extends string>(
+	facts: Partial<Record<Key, FactForms>>,
+	ladder: Ladder<Key>,
+	width: number,
+	theme: Theme,
+): string[] {
+	const linesAt = (state: number): string[] => {
+		const forms = new Map<Key | "spacing", Form>(ladder.steps.slice(0, state));
+		const spacing = forms.get("spacing") === "bare" ? SPACING.bare : SPACING.full;
+		const text = (key: Key): string => {
+			const form = forms.get(key) ?? "full";
+			const fact = facts[key];
+			return form === "hidden" || !fact ? "" : fact[form]!;
+		};
+		const rows = ladder.rows.map((row) => row.map((group) => group.map(text).filter(Boolean).join(spacing.joiner)).filter(Boolean));
+		return packRows(rows, width, theme.fg("dim", spacing.separator));
+	};
+	const states = Array.from({ length: ladder.steps.length + 1 }, (_, state) => linesAt(state));
+	return states.find((lines) => lines.length === states.at(-1)!.length)!;
 }
 
 /** Cut the middle of a name down to maxLength, marking the cut with an ellipsis.
@@ -199,16 +297,14 @@ function trimSessionPrefix(session: string, cwd: string): string {
 		: session;
 }
 
-type DisplaySessionPart = { text: string; token: "text" | "dim" };
+type DisplaySession = { name: string | null; id: string | null };
 
-function getDisplaySessionParts(ctx: any, cwd: string, pi: ExtensionAPI): DisplaySessionPart[] {
-	const customName = pi.getSessionName?.() || null;
-	const sessionId = ctx.sessionManager?.getSessionId?.() || null;
-	if (!customName) return sessionId ? [{ text: sessionId, token: "dim" }] : [];
-	const displayName = trimSessionPrefix(customName, cwd);
-	const namePart = { text: displayName, token: "text" } as const;
-	const idPart = sessionId ? [{ text: sessionId, token: "dim" } as const] : [];
-	return [namePart, ...idPart];
+function getDisplaySession(ctx: any, cwd: string, pi: ExtensionAPI): DisplaySession {
+	const customName: string | null = pi.getSessionName?.() || null;
+	return {
+		name: customName && trimSessionPrefix(customName, cwd),
+		id: ctx.sessionManager?.getSessionId?.() || null,
+	};
 }
 
 function getSkillLocations(pi: ExtensionAPI): SkillLocation[] {
@@ -372,8 +468,7 @@ function ctxGauge(pct: number): string {
 	return CONTEXT_GAUGE_SYMBOLS[stepIndex]!;
 }
 
-function renderThinkingLabel(theme: any, level: string, full: boolean): string | null {
-	if (!level) return null;
+function renderThinkingLabel(theme: any, level: string, full: boolean): string {
 	const info = THINKING_LEVELS[level];
 	if (!info) return level;
 	const label = full ? info.full : info.short;
@@ -479,7 +574,7 @@ interface FooterSnapshot {
 	model: ExtensionContext["model"];
 	stats: SessionStats;
 	context: ReturnType<typeof getContextPercent>;
-	sessionParts: DisplaySessionPart[];
+	session: DisplaySession;
 }
 
 // ── Extension entry point ───────────────────────────────────────────────────
@@ -523,7 +618,7 @@ export default function (pi: ExtensionAPI) {
 		snapshot = {
 			manager, sessionId, leafId, model, stats,
 			context: getContextPercent(currentCtx, stats.lastContextTokens, usage),
-			sessionParts: getDisplaySessionParts(currentCtx, currentCtx.cwd || ".", pi),
+			session: getDisplaySession(currentCtx, currentCtx.cwd || ".", pi),
 		};
 		return snapshot;
 	}
@@ -531,9 +626,17 @@ export default function (pi: ExtensionAPI) {
 	function renderAbove(width: number, terminalHeight: number, theme: Theme): string[] {
 		if (!currentCtx) return [];
 		const paint = makePainter(theme);
-		const model = formatModel(currentCtx.model);
-		const thinking = renderThinkingLabel(theme, thinkingLevel, true);
-		const sessionParts = getSnapshot().sessionParts.map((part) => theme.fg(part.token, part.text));
+		const { session } = getSnapshot();
+		// Weight is reserved for the pill and for thinking at high and above, so
+		// the model carries its family hue and nothing more.
+		const headerFacts: Partial<Record<HeaderFact, FactForms>> = {
+			model: { full: paint.token(MACHINE_TOKEN, formatModel(currentCtx.model)) },
+			thinking: { full: renderThinkingLabel(theme, thinkingLevel, true), short: renderThinkingLabel(theme, thinkingLevel, false) },
+			sessionName: session.name ? { full: theme.fg("text", session.name) } : undefined,
+			sessionId: session.id
+				? { full: theme.fg("dim", session.id), short: theme.fg("dim", session.id.split("-").slice(0, 2).join("-")) }
+				: undefined,
+		};
 		// No background here: the cwd pill is the one filled element in the whole
 		// footer, and a second pill style would leave neither of them the anchor.
 		const renderSkillLines = (layout: SkillLayout) => wrapJoinedLines(
@@ -545,12 +648,6 @@ export default function (pi: ExtensionAPI) {
 			width,
 			theme.fg("dim", layout.separator),
 		);
-		// Weight is reserved for the pill and for thinking at high and above, so
-		// the model carries its family hue and nothing more.
-		const parts = [paint.token(MACHINE_TOKEN, model)];
-		if (thinking) parts.push(thinking);
-		parts.push(...sessionParts);
-		const separator = theme.fg("dim", WIDE_SEPARATOR);
 		// A short terminal takes the fullest layout that fits the row limit. Hiding
 		// skills behind a count is the last resort, after the most compact layout.
 		const shortTerminal = terminalHeight <= SHORT_TERMINAL_HEIGHT;
@@ -563,7 +660,7 @@ export default function (pi: ExtensionAPI) {
 		const hiddenSkillCount = skillLines.slice(visibleSkillLines.length).reduce((count, line) => count + line.partCount, 0);
 		const overflowLines = hiddenSkillCount === 0 ? [] : [truncateToWidth(theme.fg("dim", ` +${hiddenSkillCount} skills`), width)];
 		return [
-			...wrapJoinedLines(parts, width, separator).map((line) => line.text),
+			...fitFacts(headerFacts, HEADER_LADDER, width, theme),
 			...visibleSkillLines.map((line) => line.text),
 			...overflowLines,
 		];
@@ -573,51 +670,20 @@ export default function (pi: ExtensionAPI) {
 		if (!currentCtx) return [];
 		const { stats, context: { pct, window, tokens } } = getSnapshot();
 		const paint = makePainter(theme);
-		return isNarrow(width)
-			? renderFooterNarrow(width, theme, paint, stats, pct, window)
-			: renderFooterWide(width, theme, paint, stats, pct, window, tokens);
-	}
-
-	function renderFooterWide(
-		width: number,
-		theme: any,
-		paint: Painter,
-		stats: SessionStats,
-		pct: number,
-		window: number,
-		tokens: number,
-	): string[] {
-		const separator = theme.fg("dim", WIDE_SEPARATOR);
-		const label = (text: string) => theme.fg("dim", text.padEnd(8));
-		const cwd = currentCtx.cwd || ".";
-
-		const locationParts: string[] = [];
-		if (gitBranch) {
-			// A dirty worktree is a property of the place, not a cost, so it stays
-			// in the place family and leaves `warning` meaning spend alone.
-			const dirty = gitDirty ? paint.token(PLACE_TOKEN, "*") : "";
-			locationParts.push(`${paint.token(PLACE_TOKEN, ` ${gitBranch}`)}${dirty}`);
-		}
-		locationParts.push(theme.bg("selectedBg", paint.token(PLACE_TOKEN, theme.bold(` ${currentDirectoryName(cwd)}/ `))));
-		const locationLine = truncateToWidth(` ${locationParts.join(separator)}`, width);
-
+		const label = (text: string) => theme.fg("dim", `${text} `);
+		const pill = (text: string) => theme.bg("selectedBg", paint.token(PLACE_TOKEN, theme.bold(text)));
+		const directory = currentDirectoryName(currentCtx.cwd || ".");
+		// A dirty worktree is a property of the place, not a cost, so it stays in
+		// the place family and leaves `warning` meaning spend alone.
+		const dirty = gitDirty ? paint.token(PLACE_TOKEN, "*") : "";
 		const gauge = paint.ramp(CONTEXT_STOPS, pct, `${ctxGauge(pct)} ${Math.round(pct)}%`);
 		// Colour the figure that moves and leave its reference quiet, so the eye
 		// lands on the reading rather than on the window size beside it.
-		const contextValue =
-			paint.ramp(CONTEXT_STOPS, pct, formatTokens(tokens)) +
-			theme.fg("dim", ` / ${formatTokens(window)} tokens`);
+		const usedTokens = paint.ramp(CONTEXT_STOPS, pct, formatTokens(tokens));
 		const usingSubscription = currentCtx.model
 			? currentCtx.modelRegistry?.isUsingOAuth?.(currentCtx.model)
 			: false;
-		const costText = paint.token(SPEND_TOKEN, `$${formatCost(stats.totalCost)}`);
-		const subLabel = usingSubscription ? theme.fg("muted", " sub") : "";
-		const perTurn = paint.quiet(SPEND_TOKEN, `$${formatCost(stats.averageCostPerTurn)}/turn`);
-		const contextLine = truncateToWidth(
-			` ${label("context")}${gauge}  ${contextValue}${separator}${costText}${subLabel}  ${perTurn}`,
-			width,
-		);
-
+		const cost = (amount: string) => paint.token(SPEND_TOKEN, `$${amount}`) + (usingSubscription ? theme.fg("muted", " sub") : "");
 		// A hit rate is a measurement, so it rides the ramp. The old cliff at 80%
 		// made 79% and 20% look identical and threw the reading away.
 		const sessionHit = stats.sessionCacheHitRate;
@@ -625,50 +691,31 @@ export default function (pi: ExtensionAPI) {
 			? paint.ramp(CACHE_STOPS, sessionHit, `${sessionHit.toFixed(1)}% session`)
 			: theme.fg("dim", "no cache yet");
 		const latestHit = stats.latestCacheHitRate;
-		const latestText = stats.latestCacheMissTokens != null
-			? theme.fg("error", `latest miss ${formatTokens(stats.latestCacheMissTokens)} re-billed`)
-			: latestHit != null
-				? paint.ramp(CACHE_STOPS, latestHit, `latest ${latestHit.toFixed(1)}%`)
-				: null;
-		const reuseSplit =
-			paint.ramp(CACHE_STOPS, sessionHit ?? 0, formatTokens(stats.totalReused)) +
-			theme.fg("dim", ` reused / ${formatTokens(stats.totalFresh)} new`);
-		const cacheParts = [sessionHitText, latestText, reuseSplit].filter(Boolean);
-		const cacheLine = truncateToWidth(` ${label("cache")}${cacheParts.join(separator)}`, width);
-
-		return [locationLine, contextLine, cacheLine];
-	}
-
-	function renderFooterNarrow(
-		width: number,
-		theme: any,
-		paint: Painter,
-		stats: SessionStats,
-		pct: number,
-		window: number,
-	): string[] {
-		const cwd = currentCtx.cwd || ".";
-		const locationParts: string[] = [];
-		if (gitBranch) {
-			const dirty = gitDirty ? paint.token(PLACE_TOKEN, "*") : "";
-			locationParts.push(`${paint.token(PLACE_TOKEN, gitBranch)}${dirty}`);
-		}
-		// The pill earns its two columns most here: a split pane is where you are
-		// least sure which session you are looking at.
-		locationParts.push(theme.bg("selectedBg", paint.token(PLACE_TOKEN, theme.bold(` ${currentDirectoryName(cwd)}/ `))));
-		const locationLine = truncateToWidth(` ${locationParts.join(NARROW_SEPARATOR)}`, width);
-
-		const gauge = paint.ramp(CONTEXT_STOPS, pct, `${Math.round(pct)}%/${formatTokens(window)}`);
-		const latestHit = stats.latestCacheHitRate;
-		const cache = stats.latestCacheMissTokens != null
-			? theme.fg("error", `miss ${formatTokens(stats.latestCacheMissTokens)}`)
-			: latestHit != null
-				? paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`)
-				: "";
-		const cost = paint.token(SPEND_TOKEN, `$${formatCost(stats.totalCost)}`);
-		const dataLine = truncateToWidth(` ${[gauge, cache, cost].filter(Boolean).join(NARROW_SEPARATOR)}`, width);
-
-		return [locationLine, dataLine];
+		const missedTokens = stats.latestCacheMissTokens;
+		const footerFacts: Partial<Record<FooterFact, FactForms>> = {
+			branch: gitBranch
+				? { full: `${paint.token(PLACE_TOKEN, `${BRANCH_GLYPH} ${gitBranch}`)}${dirty}`, bare: `${paint.token(PLACE_TOKEN, gitBranch)}${dirty}` }
+				: undefined,
+			cwd: { full: pill(` ${directory}/ `), short: pill(`${directory}/`) },
+			context: { full: `${label("context")}${gauge}`, bare: gauge },
+			tokens: {
+				full: `${usedTokens}${theme.fg("dim", ` / ${formatTokens(window)} tokens`)}`,
+				short: `${usedTokens}${theme.fg("dim", ` / ${formatTokens(window)}`)}`,
+			},
+			cost: { full: cost(formatCost(stats.totalCost)), short: cost(stats.totalCost.toFixed(1)), bare: cost(stats.totalCost.toFixed(0)) },
+			perTurn: { full: paint.quiet(SPEND_TOKEN, `$${formatCost(stats.averageCostPerTurn)}/turn`) },
+			cacheSession: { full: `${label("cache")}${sessionHitText}`, bare: sessionHitText },
+			latest: missedTokens != null
+				? { full: theme.fg("error", `latest miss ${formatTokens(missedTokens)} re-billed`), short: theme.fg("error", `miss ${formatTokens(missedTokens)}`) }
+				: latestHit != null
+					? { full: paint.ramp(CACHE_STOPS, latestHit, `latest ${latestHit.toFixed(1)}%`), short: paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`) }
+					: undefined,
+			reuse: {
+				full: paint.ramp(CACHE_STOPS, sessionHit ?? 0, formatTokens(stats.totalReused)) +
+					theme.fg("dim", ` reused / ${formatTokens(stats.totalFresh)} new`),
+			},
+		};
+		return fitFacts(footerFacts, FOOTER_LADDER, width, theme);
 	}
 
 	// ── Git ───────────────────────────────────────────────────────────────

@@ -25,7 +25,7 @@ Below the editor, see:
 - **Cache behavior:** session hit rate, latest hit or estimated miss, and reused/new token totals.
 - **Where you are:** Git branch, dirty marker, directory, and other extensions’ status messages.
 
-The layout follows your Pi theme and condenses to two footer lines in narrow panes.
+The layout follows your Pi theme. The header and the footer each take the fewest lines they can. To fit, they first drop labels, round readings, remove whitespace, and drop the branch icon. Only then does the footer hide facts: the reused/new split, the session hit rate, the token counts, and last the cost per turn.
 
 On terminals with 40 rows or fewer, skills get at most four rows. To fit, the row first drops token ages, then separators, then shortens long names in the middle (`caut…ctor`). Only then does it show three rows plus a hidden-skill count.
 
