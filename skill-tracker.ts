@@ -48,8 +48,7 @@ function readPaths(toolCall: UnknownRecord): string[] {
 	if (toolCall.name === "read" && typeof toolCall.arguments.path === "string") {
 		return [toolCall.arguments.path];
 	}
-	if (toolCall.name !== "read_many_files" || !Array.isArray(toolCall.arguments.paths)) return [];
-	return toolCall.arguments.paths.filter((path): path is string => typeof path === "string");
+	return [];
 }
 
 function skillNamesForReadPath(rawPath: string, skills: readonly SkillLocation[], cwd: string): string[] {

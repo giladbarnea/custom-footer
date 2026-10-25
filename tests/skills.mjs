@@ -118,15 +118,15 @@ assert(
 	"An inline-commands-only skill-file block incorrectly loaded its parent skill",
 );
 
-const nestedReadManyMessages = [
+const nestedReadMessages = [
 	{
 		role: "assistant",
 		content: [
 			{
 				type: "toolCall",
-				id: "read-many",
-				name: "read_many_files",
-				arguments: { paths: ["/skills/tdd/references/example.md", "/workspace/README.md"] },
+				id: "read-reference",
+				name: "read",
+				arguments: { path: "/skills/tdd/references/example.md" },
 			},
 		],
 		stopReason: "toolUse",
@@ -135,8 +135,8 @@ const nestedReadManyMessages = [
 	},
 	{
 		role: "toolResult",
-		toolCallId: "read-many",
-		toolName: "read_many_files",
+		toolCallId: "read-reference",
+		toolName: "read",
 		content: [{ type: "text", text: "files" }],
 		isError: false,
 		timestamp: 41,
@@ -150,7 +150,7 @@ const nestedReadManyMessages = [
 	},
 ];
 assert(
-	getLoadedSkills(nestedReadManyMessages, skills, cwd).length === 0,
+	getLoadedSkills(nestedReadMessages, skills, cwd).length === 0,
 	"A nested skill-directory read incorrectly loaded its parent skill",
 );
 
