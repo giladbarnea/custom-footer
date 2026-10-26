@@ -3,15 +3,15 @@
  *
  * Skill row. Each loaded skill shows its name and its token age: how far the
  * context has grown since the first response that saw the skill. The age tells
- * how deep in the context the skill now sits. On a terminal of 40 rows or
- * fewer, the skills get at most four rows. When they do not fit, the row gives
- * up the least important thing left, one step at a time:
+ * how deep in the context the skill now sits. Skills get one tenth of the
+ * terminal's rows, rounded to the nearest row with a minimum of two. When
+ * they do not fit, the row gives up the least important thing left:
  *   1. The token ages.
  *   2. The separators between skills.
  *   3. The middle of the longest names, one character per step, down to four
  *      characters on each side of the ellipsis. Names shorter than ten
  *      characters never change.
- *   4. Last, three rows in the most compact layout plus a "+N skills" count.
+ *   4. Last, reserve the final row for a "+N skills" count.
  * Knowing which skills are loaded matters more than any detail about them, so
  * hiding a skill is the last resort. The Claude Code status line in
  * ~/.claude/statusline.sh uses the same order.
@@ -31,9 +31,8 @@ import { getLoadedSkills, type SkillLocation } from "./skill-tracker.ts";
 
 // ── Layout constants ────────────────────────────────────────────────────────
 
-const SHORT_TERMINAL_HEIGHT = 40;
-const SKILL_COLLAPSE_ROW_THRESHOLD = 4;
-const COLLAPSED_SKILL_ROWS = 3;
+const MINIMUM_SKILL_ROWS = 2;
+const TERMINAL_ROWS_PER_SKILL_ROW = 10;
 // A truncated name keeps four characters on each side of the ellipsis.
 const MIN_TRUNCATED_NAME_LENGTH = 9;
 const NARROW_SEPARATOR = " ";
@@ -648,15 +647,13 @@ export default function (pi: ExtensionAPI) {
 			width,
 			theme.fg("dim", layout.separator),
 		);
-		// A short terminal takes the fullest layout that fits the row limit. Hiding
-		// skills behind a count is the last resort, after the most compact layout.
-		const shortTerminal = terminalHeight <= SHORT_TERMINAL_HEIGHT;
+		// Take the fullest layout that fits the row limit. Hiding skills behind a
+		// count is the last resort, after the most compact layout.
+		const maximumSkillRows = Math.max(MINIMUM_SKILL_ROWS, Math.round(terminalHeight / TERMINAL_ROWS_PER_SKILL_ROW));
 		const layouts = skillLayouts(Math.max(0, ...loadedSkills.map(({ name }) => name.length)));
-		const candidates = shortTerminal ? layouts : layouts.slice(0, 1);
-		const layout = candidates.find((candidate) => renderSkillLines(candidate).length <= SKILL_COLLAPSE_ROW_THRESHOLD) ?? candidates.at(-1)!;
+		const layout = layouts.find((candidate) => renderSkillLines(candidate).length <= maximumSkillRows) ?? layouts.at(-1)!;
 		const skillLines = renderSkillLines(layout);
-		const collapseSkills = shortTerminal && skillLines.length > SKILL_COLLAPSE_ROW_THRESHOLD;
-		const visibleSkillLines = collapseSkills ? skillLines.slice(0, COLLAPSED_SKILL_ROWS) : skillLines;
+		const visibleSkillLines = skillLines.length > maximumSkillRows ? skillLines.slice(0, maximumSkillRows - 1) : skillLines;
 		const hiddenSkillCount = skillLines.slice(visibleSkillLines.length).reduce((count, line) => count + line.partCount, 0);
 		const overflowLines = hiddenSkillCount === 0 ? [] : [truncateToWidth(theme.fg("dim", ` +${hiddenSkillCount} skills`), width)];
 		return [

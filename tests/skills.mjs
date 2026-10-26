@@ -305,19 +305,36 @@ const collapsedHeaderLines = layoutWidget.render(24).map(stripVTControlCharacter
 tui.terminal.rows = 41;
 deepEqual(
 	layoutWidget.render(24).map(stripVTControlCharacters),
+	collapsedHeaderLines,
+	"Growing the same terminal to 41 rows must keep the four-row skill budget without a session event",
+);
+tui.terminal.rows = 24;
+deepEqual(
+	layoutWidget.render(24).map(stripVTControlCharacters),
+	[...metadataLines, " skill-01 skill-02", " +11 skills"],
+	"A 24-row terminal must fit the visible skills and exact hidden count into two rows",
+);
+tui.terminal.rows = 64;
+deepEqual(
+	layoutWidget.render(24).map(stripVTControlCharacters),
+	[
+		...metadataLines,
+		" skill-01 skill-02", " skill-03 skill-04", " skill-05 skill-06",
+		" skill-07 skill-08", " skill-09 skill-10", " +3 skills",
+	],
+	"A 64-row terminal must keep the hidden count inside its six-row skill budget",
+);
+tui.terminal.rows = 65;
+deepEqual(
+	layoutWidget.render(24).map(stripVTControlCharacters),
 	[
 		...metadataLines,
 		" skill-01 · skill-02", " skill-03 · skill-04", " skill-05 · skill-06",
 		" skill-07 · skill-08", " skill-09 · skill-10", " skill-11 · skill-12", " skill-13",
 	],
-	"Growing the same terminal to 41 rows must restore the full skills list without a session event",
+	"Growing the same terminal to 65 rows must round the budget to seven and restore all skills without a session event",
 );
-tui.terminal.rows = 24;
-deepEqual(
-	layoutWidget.render(24).map(stripVTControlCharacters),
-	collapsedHeaderLines,
-	"Shrinking the same terminal must collapse the list again without losing skills",
-);
+tui.terminal.rows = 40;
 deepEqual(
 	layoutWidget.render(45).map(stripVTControlCharacters),
 	[
@@ -381,5 +398,88 @@ deepEqual(
 	[" theo…mind", " caut…ctor", " ai-t…ated tdd", " +4 skills"],
 	"Hiding skills must come only after every long name keeps just four characters on each side",
 );
+
+const mobileSkills = [
+	["handoff", 355_000], ["ai-to-delegated", 344_000], ["ai-to-leader", 226_000], ["theory-of-mind", 56_000],
+	["review-ambition", 254_000], ["task-graph", 254_000], ["break-down-scope-by-discipline", 254_000], ["type-annotations", 160_000],
+];
+currentTokens = 440_000;
+effectiveMessages = mobileSkills.flatMap(([name, tokenAge], index) => [
+	{ role: "user", content: `<skill name="${name}" location="/skills/${name}/SKILL.md">Loaded.</skill>`, timestamp: 400 + index * 2 },
+	{ role: "assistant", content: [], stopReason: "stop", timestamp: 401 + index * 2, usage: usage(currentTokens - tokenAge) },
+]);
+await sessionTree({ type: "session_tree" }, extensionContext);
+tui.terminal.rows = 44;
+deepEqual(
+	layoutWidget.render(55).slice(1).map(stripVTControlCharacters),
+	[
+		" handoff · ai-to-delegated · ai-to-leader",
+		" theory-of-mind · review-ambition · task-graph",
+		" break-down-scope-by-discipline · type-annotations",
+	],
+	"A 55x44 mobile terminal must remove token ages to fit its four-row skill budget, even above 40 terminal rows",
+);
+
+for (const { columns, rows, expected } of [
+	{
+		columns: 55, rows: 23,
+		expected: [
+			" handoff ai-to-…egated ai-to-leader theory…f-mind",
+			" review…bition task-graph break-…ipline type-a…ations",
+		],
+	},
+	{
+		columns: 44, rows: 18,
+		expected: [
+			" handoff ai-t…ated ai-t…ader theo…mind",
+			" revi…tion task…raph brea…line type…ions",
+		],
+	},
+	{
+		columns: 63, rows: 29,
+		expected: [
+			" handoff · ai-to-delegated · ai-to-leader · theory-of-mind",
+			" review-ambition · task-graph · break-down-scope-by-discipline",
+			" type-annotations",
+		],
+	},
+	{
+		columns: 82, rows: 36,
+		expected: [
+			" handoff -355k · ai-to-delegated -344k · ai-to-leader -226k · theory-of-mind -56k",
+			" review-ambition -254k · task-graph -254k · break-down-scope-by-discipline -254k",
+			" type-annotations -160k",
+		],
+	},
+	{
+		columns: 33, rows: 13,
+		expected: [" handoff ai-t…ated ai-t…ader", " +5 skills"],
+	},
+	{
+		columns: 55, rows: 60,
+		expected: [
+			" handoff -355k · ai-to-delegated -344k",
+			" ai-to-leader -226k · theory-of-mind -56k",
+			" review-ambition -254k · task-graph -254k",
+			" break-down-scope-by-discipline -254k",
+			" type-annotations -160k",
+		],
+	},
+	{
+		columns: 80, rows: 40,
+		expected: [
+			" handoff -355k · ai-to-delegated -344k · ai-to-leader -226k",
+			" theory-of-mind -56k · review-ambition -254k · task-graph -254k",
+			" break-down-scope-by-discipline -254k · type-annotations -160k",
+		],
+	},
+]) {
+	tui.terminal.rows = rows;
+	deepEqual(
+		layoutWidget.render(columns).slice(1).map(stripVTControlCharacters),
+		expected,
+		`Resizing the same header to ${columns}x${rows} must preserve the fullest layout within its skill-row budget`,
+	);
+}
 
 console.log("custom-footer skill tracking regression ok");
