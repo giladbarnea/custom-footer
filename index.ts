@@ -11,8 +11,8 @@
  *   3. The middle of the longest names, one character per step, down to four
  *      characters on each side of the ellipsis. Names shorter than ten
  *      characters never change.
- *   4. Last, hide skills from the end behind a "+N skills" count that ends
- *      the last row.
+ *   4. Last, hide skills from the end behind a "+N" count that ends the
+ *      last row.
  * Knowing which skills are loaded matters more than any detail about them, so
  * hiding a skill is the last resort. The Claude Code status line in
  * ~/.claude/statusline.sh uses the same order.
@@ -652,7 +652,7 @@ export default function (pi: ExtensionAPI) {
 		const parts = skillParts(layout);
 		const partsHiding = (hiddenCount: number) => hiddenCount === 0
 			? parts
-			: [...parts.slice(0, parts.length - hiddenCount), theme.fg("dim", `+${hiddenCount} skills`)];
+			: [...parts.slice(0, parts.length - hiddenCount), theme.fg("dim", `+${hiddenCount}`)];
 		const hiddenSkillCount = Array.from({ length: parts.length + 1 }, (_, count) => count)
 			.find((count) => renderSkillLines(partsHiding(count), layout).length <= maximumSkillRows)!;
 		return [

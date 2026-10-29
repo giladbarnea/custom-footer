@@ -297,7 +297,7 @@ await sessionTree({ type: "session_tree" }, extensionContext);
 tui.terminal.rows = 40;
 deepEqual(
 	layoutWidget.render(24).map(stripVTControlCharacters),
-	[...metadataLines, " skill-01 skill-02", " skill-03 skill-04", " skill-05 skill-06", " skill-07 +6 skills"],
+	[...metadataLines, " skill-01 skill-02", " skill-03 skill-04", " skill-05 skill-06", " skill-07 skill-08 +5"],
 	"A terminal with 40 rows must end its four skill rows with the exact hidden skill count, in the most compact layout",
 );
 
@@ -311,7 +311,7 @@ deepEqual(
 tui.terminal.rows = 24;
 deepEqual(
 	layoutWidget.render(24).map(stripVTControlCharacters),
-	[...metadataLines, " skill-01 skill-02", " skill-03 +10 skills"],
+	[...metadataLines, " skill-01 skill-02", " skill-03 skill-04 +9"],
 	"A 24-row terminal must fit the visible skills and exact hidden count into two rows",
 );
 tui.terminal.rows = 61;
@@ -320,7 +320,7 @@ deepEqual(
 	[
 		...metadataLines,
 		" skill-01 skill-02", " skill-03 skill-04", " skill-05 skill-06",
-		" skill-07 skill-08", " skill-09 skill-10", " skill-11 +2 skills",
+		" skill-07 skill-08", " skill-09 skill-10", " skill-11 skill-12 +1",
 	],
 	"A 61-row terminal must keep the hidden count inside its six-row skill budget",
 );
@@ -395,7 +395,7 @@ deepEqual(
 );
 deepEqual(
 	skillRowsAt(16),
-	[" theo…mind", " caut…ctor", " ai-t…ated tdd", " +4 skills"],
+	[" theo…mind", " caut…ctor", " ai-t…ated tdd", " pseu…code +3"],
 	"Hiding skills must come only after every long name keeps just four characters on each side",
 );
 
@@ -430,7 +430,7 @@ for (const { columns, rows, expected } of [
 	},
 	{
 		columns: 44, rows: 18,
-		expected: [" handoff ai-t…ated ai-t…ader +5 skills"],
+		expected: [" handoff ai-t…ated ai-t…ader theo…mind +4"],
 	},
 	{
 		columns: 63, rows: 29,
@@ -449,7 +449,7 @@ for (const { columns, rows, expected } of [
 	},
 	{
 		columns: 33, rows: 13,
-		expected: [" handoff ai-t…ated +6 skills"],
+		expected: [" handoff ai-t…ated ai-t…ader +5"],
 	},
 	{
 		columns: 55, rows: 60,
