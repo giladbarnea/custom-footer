@@ -297,8 +297,8 @@ await sessionTree({ type: "session_tree" }, extensionContext);
 tui.terminal.rows = 40;
 deepEqual(
 	layoutWidget.render(24).map(stripVTControlCharacters),
-	[...metadataLines, " skill-01 skill-02", " skill-03 skill-04", " skill-05 skill-06", " +7 skills"],
-	"A terminal with 40 rows must show three skills rows in the most compact layout and the exact hidden skill count",
+	[...metadataLines, " skill-01 skill-02", " skill-03 skill-04", " skill-05 skill-06", " skill-07 +6 skills"],
+	"A terminal with 40 rows must end its four skill rows with the exact hidden skill count, in the most compact layout",
 );
 
 const collapsedHeaderLines = layoutWidget.render(24).map(stripVTControlCharacters);
@@ -311,20 +311,20 @@ deepEqual(
 tui.terminal.rows = 24;
 deepEqual(
 	layoutWidget.render(24).map(stripVTControlCharacters),
-	[...metadataLines, " skill-01 skill-02", " +11 skills"],
+	[...metadataLines, " skill-01 skill-02", " skill-03 +10 skills"],
 	"A 24-row terminal must fit the visible skills and exact hidden count into two rows",
 );
-tui.terminal.rows = 64;
+tui.terminal.rows = 61;
 deepEqual(
 	layoutWidget.render(24).map(stripVTControlCharacters),
 	[
 		...metadataLines,
 		" skill-01 skill-02", " skill-03 skill-04", " skill-05 skill-06",
-		" skill-07 skill-08", " skill-09 skill-10", " +3 skills",
+		" skill-07 skill-08", " skill-09 skill-10", " skill-11 +2 skills",
 	],
-	"A 64-row terminal must keep the hidden count inside its six-row skill budget",
+	"A 61-row terminal must keep the hidden count inside its six-row skill budget",
 );
-tui.terminal.rows = 65;
+tui.terminal.rows = 62;
 deepEqual(
 	layoutWidget.render(24).map(stripVTControlCharacters),
 	[
@@ -332,7 +332,7 @@ deepEqual(
 		" skill-01 · skill-02", " skill-03 · skill-04", " skill-05 · skill-06",
 		" skill-07 · skill-08", " skill-09 · skill-10", " skill-11 · skill-12", " skill-13",
 	],
-	"Growing the same terminal to 65 rows must round the budget to seven and restore all skills without a session event",
+	"Growing the same terminal to 62 rows must raise the budget to seven and restore all skills without a session event",
 );
 tui.terminal.rows = 40;
 deepEqual(
@@ -430,17 +430,13 @@ for (const { columns, rows, expected } of [
 	},
 	{
 		columns: 44, rows: 18,
-		expected: [
-			" handoff ai-t…ated ai-t…ader theo…mind",
-			" revi…tion task…raph brea…line type…ions",
-		],
+		expected: [" handoff ai-t…ated ai-t…ader +5 skills"],
 	},
 	{
 		columns: 63, rows: 29,
 		expected: [
-			" handoff · ai-to-delegated · ai-to-leader · theory-of-mind",
-			" review-ambition · task-graph · break-down-scope-by-discipline",
-			" type-annotations",
+			" handoff ai-to-delegated ai-to-leader theory-of-mind",
+			" review-ambition task-graph break-do…scipline type-annotations",
 		],
 	},
 	{
@@ -453,7 +449,7 @@ for (const { columns, rows, expected } of [
 	},
 	{
 		columns: 33, rows: 13,
-		expected: [" handoff ai-t…ated ai-t…ader", " +5 skills"],
+		expected: [" handoff ai-t…ated +6 skills"],
 	},
 	{
 		columns: 55, rows: 60,
@@ -479,6 +475,34 @@ for (const { columns, rows, expected } of [
 		layoutWidget.render(columns).slice(1).map(stripVTControlCharacters),
 		expected,
 		`Resizing the same header to ${columns}x${rows} must preserve the fullest layout within its skill-row budget`,
+	);
+}
+
+// Skill-row counts Gilad marked as right on his phone over SSH, on October 29, 2026.
+// Each size is a Herdr pane in Pi's fullscreen layout. The screenshots loaded these twelve skills.
+const phoneSkills = [
+	"handoff", "ai-to-delegated", "ai-to-leader", "theory-of-mind", "review-ambition", "task-graph",
+	"break-down-scope-by-discipline", "type-annotations", "plannotator", "md-metadata", "jsonl-toolkit", "herdr",
+];
+effectiveMessages = [{
+	role: "user",
+	content: phoneSkills.map((name) => `<skill name="${name}" location="/skills/${name}/SKILL.md">Loaded.</skill>`).join("\n"),
+}];
+await sessionTree({ type: "session_tree" }, extensionContext);
+const phoneMetadataRowCount = 1;
+for (const { columns, rows, skillRows } of [
+	{ columns: 80, rows: 34, skillRows: 3 },
+	{ columns: 69, rows: 30, skillRows: 3 },
+	{ columns: 61, rows: 27, skillRows: 2 },
+	{ columns: 61, rows: 26, skillRows: 2 },
+	{ columns: 58, rows: 23, skillRows: 2 },
+	{ columns: 53, rows: 21, skillRows: 1 },
+]) {
+	tui.terminal.rows = rows;
+	const renderedSkillRows = layoutWidget.render(columns).slice(phoneMetadataRowCount).map(stripVTControlCharacters);
+	assert(
+		renderedSkillRows.length === skillRows,
+		`A ${columns}x${rows} phone pane must give skills ${skillRows} rows, got ${renderedSkillRows.length}: ${JSON.stringify(renderedSkillRows)}`,
 	);
 }
 

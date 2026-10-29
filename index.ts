@@ -3,15 +3,16 @@
  *
  * Skill row. Each loaded skill shows its name and its token age: how far the
  * context has grown since the first response that saw the skill. The age tells
- * how deep in the context the skill now sits. Skills get one tenth of the
- * terminal's rows, rounded to the nearest row with a minimum of two. When
- * they do not fit, the row gives up the least important thing left:
+ * how deep in the context the skill now sits. Skills get one row for every
+ * eight terminal rows past the first six, rounded down, with a minimum of one.
+ * When they do not fit, the row gives up the least important thing left:
  *   1. The token ages.
  *   2. The separators between skills.
  *   3. The middle of the longest names, one character per step, down to four
  *      characters on each side of the ellipsis. Names shorter than ten
  *      characters never change.
- *   4. Last, reserve the final row for a "+N skills" count.
+ *   4. Last, hide skills from the end behind a "+N skills" count that ends
+ *      the last row.
  * Knowing which skills are loaded matters more than any detail about them, so
  * hiding a skill is the last resort. The Claude Code status line in
  * ~/.claude/statusline.sh uses the same order.
@@ -31,8 +32,11 @@ import { getLoadedSkills, type SkillLocation } from "./skill-tracker.ts";
 
 // ── Layout constants ────────────────────────────────────────────────────────
 
-const MINIMUM_SKILL_ROWS = 2;
-const TERMINAL_ROWS_PER_SKILL_ROW = 10;
+// Calibrated on a phone over SSH: 21 terminal rows give one skill row, 22 to
+// 29 give two, and 30 to 37 give three.
+const MINIMUM_SKILL_ROWS = 1;
+const TERMINAL_ROWS_BEFORE_SKILL_ROWS = 6;
+const TERMINAL_ROWS_PER_SKILL_ROW = 8;
 // A truncated name keeps four characters on each side of the ellipsis.
 const MIN_TRUNCATED_NAME_LENGTH = 9;
 const NARROW_SEPARATOR = " ";
@@ -174,17 +178,12 @@ function wrapParts(parts: string[], width: number, separator: string): string[][
 	return lines;
 }
 
-type WrappedLine = { text: string; partCount: number };
-
-/** Wrap whole parts and retain the number of parts in each row.
+/** Wrap whole parts into joined lines that fit the width.
  * @example
- * wrapJoinedLines(["one", "two"], 6, " · ") // [{ text: " one", partCount: 1 }, { text: " two", partCount: 1 }]
+ * wrapJoinedLines(["one", "two"], 6, " · ") // [" one", " two"]
  */
-function wrapJoinedLines(parts: string[], width: number, separator: string): WrappedLine[] {
-	return wrapParts(parts, width, separator).map((lineParts) => ({
-		text: truncateToWidth(joinedLine(lineParts, separator), width),
-		partCount: lineParts.length,
-	}));
+function wrapJoinedLines(parts: string[], width: number, separator: string): string[] {
+	return wrapParts(parts, width, separator).map((lineParts) => truncateToWidth(joinedLine(lineParts, separator), width));
 }
 
 /** Pack rows onto lines. Rows share a line when they fit, and a row breaks only
@@ -194,7 +193,7 @@ function wrapJoinedLines(parts: string[], width: number, separator: string): Wra
  */
 function packRows(rows: string[][], width: number, separator: string): string[] {
 	const rowLines = rows.flatMap((row) => wrapParts(row, width, separator).map((lineParts) => lineParts.join(separator)));
-	return wrapJoinedLines(rowLines, width, separator).map((line) => line.text);
+	return wrapJoinedLines(rowLines, width, separator);
 }
 
 /** The ladder's fullest state among those that pack the facts onto the fewest lines.
@@ -638,28 +637,27 @@ export default function (pi: ExtensionAPI) {
 		};
 		// No background here: the cwd pill is the one filled element in the whole
 		// footer, and a second pill style would leave neither of them the anchor.
-		const renderSkillLines = (layout: SkillLayout) => wrapJoinedLines(
-			loadedSkills.map(({ name, tokenAge }) => {
-				const nameText = paint.token(SKILL_TOKEN, middleTruncate(name, layout.maxNameLength));
-				const ageText = layout.ages && tokenAge !== null ? theme.fg("dim", ` -${formatTokens(tokenAge)}`) : "";
-				return `${nameText}${ageText}`;
-			}),
-			width,
-			theme.fg("dim", layout.separator),
-		);
+		const skillParts = (layout: SkillLayout) => loadedSkills.map(({ name, tokenAge }) => {
+			const nameText = paint.token(SKILL_TOKEN, middleTruncate(name, layout.maxNameLength));
+			const ageText = layout.ages && tokenAge !== null ? theme.fg("dim", ` -${formatTokens(tokenAge)}`) : "";
+			return `${nameText}${ageText}`;
+		});
+		const renderSkillLines = (parts: string[], layout: SkillLayout) => wrapJoinedLines(parts, width, theme.fg("dim", layout.separator));
 		// Take the fullest layout that fits the row limit. Hiding skills behind a
-		// count is the last resort, after the most compact layout.
-		const maximumSkillRows = Math.max(MINIMUM_SKILL_ROWS, Math.round(terminalHeight / TERMINAL_ROWS_PER_SKILL_ROW));
+		// count is the last resort, after the most compact layout. The count ends
+		// the last row, so even a one-row limit still names some skills.
+		const maximumSkillRows = Math.max(MINIMUM_SKILL_ROWS, Math.floor((terminalHeight - TERMINAL_ROWS_BEFORE_SKILL_ROWS) / TERMINAL_ROWS_PER_SKILL_ROW));
 		const layouts = skillLayouts(Math.max(0, ...loadedSkills.map(({ name }) => name.length)));
-		const layout = layouts.find((candidate) => renderSkillLines(candidate).length <= maximumSkillRows) ?? layouts.at(-1)!;
-		const skillLines = renderSkillLines(layout);
-		const visibleSkillLines = skillLines.length > maximumSkillRows ? skillLines.slice(0, maximumSkillRows - 1) : skillLines;
-		const hiddenSkillCount = skillLines.slice(visibleSkillLines.length).reduce((count, line) => count + line.partCount, 0);
-		const overflowLines = hiddenSkillCount === 0 ? [] : [truncateToWidth(theme.fg("dim", ` +${hiddenSkillCount} skills`), width)];
+		const layout = layouts.find((candidate) => renderSkillLines(skillParts(candidate), candidate).length <= maximumSkillRows) ?? layouts.at(-1)!;
+		const parts = skillParts(layout);
+		const partsHiding = (hiddenCount: number) => hiddenCount === 0
+			? parts
+			: [...parts.slice(0, parts.length - hiddenCount), theme.fg("dim", `+${hiddenCount} skills`)];
+		const hiddenSkillCount = Array.from({ length: parts.length + 1 }, (_, count) => count)
+			.find((count) => renderSkillLines(partsHiding(count), layout).length <= maximumSkillRows)!;
 		return [
 			...fitFacts(headerFacts, HEADER_LADDER, width, theme),
-			...visibleSkillLines.map((line) => line.text),
-			...overflowLines,
+			...renderSkillLines(partsHiding(hiddenSkillCount), layout),
 		];
 	}
 

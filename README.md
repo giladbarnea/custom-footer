@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-10-26T15-03
+last_updated: 2026-10-29T12-05
 ---
 
 <div align="center">
@@ -31,7 +31,7 @@ Below the editor, see:
 
 The layout follows your Pi theme. The header and the footer each take the fewest lines they can. To fit, they first drop labels, round readings, remove whitespace, and drop the branch icon. Only then does the footer hide facts: the reused/new split, the session hit rate, the token counts, and last the cost per turn.
 
-Skills get up to 10% of the terminal's rows, rounded to the nearest row with a minimum of two. To fit, the row first drops token ages, then separators, then shortens long names in the middle (`caut…ctor`). Only then does it reserve the final row for a hidden-skill count.
+Skills get one row for every eight terminal rows past the first six, with a minimum of one. A 21-row phone screen gets one row, a 27-row screen two, and a 34-row screen three. To fit, the row first drops token ages, then separators, then shortens long names in the middle (`caut…ctor`). Only then does it hide skills from the end, behind a `+N skills` count at the end of the last row.
 
 **Resize without rescanning the conversation.** The header and footer share cached values. Session changes refresh them, including forks and compaction.
 
