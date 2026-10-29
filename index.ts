@@ -32,6 +32,8 @@ import { getLoadedSkills, type SkillLocation } from "./skill-tracker.ts";
 
 // ── Layout constants ────────────────────────────────────────────────────────
 
+// The skill-row limit reads only the terminal height, never the todo list, editor or other widgets: predictable, and no measuring loop with taller-editor.
+// Accepted cost: when a short screen and a long todo list overflow Pi's stack, Pi cuts the skill rows first, rather than us measuring Pi's internal layout.
 // Calibrated on a phone over SSH: 21 terminal rows give one skill row, 22 to
 // 29 give two, and 30 to 37 give three.
 const MINIMUM_SKILL_ROWS = 1;
