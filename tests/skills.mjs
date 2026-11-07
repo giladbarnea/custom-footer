@@ -5,7 +5,9 @@ import { stripVTControlCharacters } from "node:util";
 import { createJiti } from "jiti";
 
 const jiti = createJiti(import.meta.url);
-const { getLoadedSkills } = await jiti.import("../skill-tracker.ts");
+const { getLoadedSkills: getProjectedLoadedSkills } = await jiti.import("../skill-tracker.ts");
+const projectedEntries = (messages) => messages.map((message) => ({ sourceEntry: { type: "message", message }, messages: [message] }));
+const getLoadedSkills = (messages, skills, cwd) => getProjectedLoadedSkills(projectedEntries(messages), skills, cwd);
 const customFooterModule = await jiti.import("../index.ts");
 const customFooter = customFooterModule.default ?? customFooterModule;
 
@@ -220,7 +222,7 @@ const extensionContext = {
 	getContextUsage: () => ({ tokens: currentTokens, contextWindow: 1_000_000, percent: 48.4 }),
 	model: { name: "test-model" },
 	sessionManager: {
-		buildSessionContext: () => ({ messages: effectiveMessages }),
+		buildSessionProjection: () => ({ entries: projectedEntries(effectiveMessages) }),
 		getBranch: () => [],
 		getSessionId: () => "session-1",
 		getLeafId: () => "leaf-1",

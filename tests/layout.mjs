@@ -21,7 +21,7 @@ const context = {
 		getSessionId: () => "01a0a3c0-52f2-7249-9ec9-90e0f7a0a142",
 		getLeafId: () => "leaf-1",
 		getBranch: () => [{ type: "message", message: assistant(20_000, 80_000, 1) }, { type: "message", message: assistant(30_000, 70_000, 2) }],
-		buildSessionContext: () => ({ messages: [] }),
+		buildSessionProjection: () => ({ entries: [] }),
 	},
 	ui: {
 		setFooter(factory) { footerFactory = factory; },

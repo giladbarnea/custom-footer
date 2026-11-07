@@ -25,7 +25,7 @@
  *   or 200k, ignoring the known physical window from getContextUsage().
  */
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 
 import { getLoadedSkills, type SkillLocation } from "./skill-tracker.ts";
@@ -489,7 +489,7 @@ interface SessionStats {
 	lastContextTokens: number; // input+output+cacheRead+cacheWrite of the last valid turn
 }
 
-function getSessionStats(ctx: any): SessionStats {
+function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
 	let turnCount = 0;
 	let totalCost = 0;
 	let totalReused = 0;
@@ -499,7 +499,7 @@ function getSessionStats(ctx: any): SessionStats {
 	let cacheWasReported = false;
 	let latestCacheHitRate: number | null = null;
 	let latestCacheMissTokens: number | null = null;
-	for (const entry of ctx.sessionManager?.getBranch?.() ?? []) {
+	for (const entry of branch) {
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
 			previousPromptTokens = null;
 			cacheWasReported = false;
@@ -587,13 +587,14 @@ export default function (pi: ExtensionAPI) {
 	let thinkingLevel = "off";
 	let loadedSkills: Array<{ name: string; tokenAge: number | null }> = [];
 	let skillsDirty = true;
+	let skillContextChangeId: string | undefined;
 	let snapshot: FooterSnapshot | undefined;
 
 	// ── Rendering ────────────────────────────────────────────────────────
 
-	function refreshLoadedSkills(ctx: any, currentContextTokens: number | null): void {
+	function refreshLoadedSkills(ctx: ExtensionContext, currentContextTokens: number | null): void {
 		loadedSkills = getLoadedSkills(
-			ctx.sessionManager.buildSessionContext().messages,
+			ctx.sessionManager.buildSessionProjection().entries,
 			getSkillLocations(pi),
 			ctx.cwd,
 		).map(({ name, loadedAtTokens }) => ({
@@ -611,9 +612,14 @@ export default function (pi: ExtensionAPI) {
 		const leafId = manager.getLeafId();
 		const model: ExtensionContext["model"] = currentCtx.model;
 		if (snapshot && snapshot.manager === manager && snapshot.sessionId === sessionId && snapshot.leafId === leafId && snapshot.model === model) return snapshot;
-		const stats = getSessionStats(currentCtx);
+		const branch = manager.getBranch();
+		const stats = getSessionStats(branch);
 		const usage = currentCtx.getContextUsage();
-		if (skillsDirty) refreshLoadedSkills(currentCtx, usage?.tokens ?? null);
+		// Boundary edits commit after turn_end, which may already have rendered the old projection.
+		const contextChangeId = branch.reduce<string | undefined>((latest, entry) =>
+			entry.type === "context_edit" || entry.type === "compaction" ? entry.id : latest, undefined);
+		if (skillsDirty || contextChangeId !== skillContextChangeId) refreshLoadedSkills(currentCtx, usage?.tokens ?? null);
+		skillContextChangeId = contextChangeId;
 		skillsDirty = false;
 		snapshot = {
 			manager, sessionId, leafId, model, stats,

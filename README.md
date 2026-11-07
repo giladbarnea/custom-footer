@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-10-29T12-05
+last_updated: 2026-11-06T23-44
 ---
 
 <div align="center">
@@ -20,7 +20,9 @@ A Pi footer that puts your session’s context, cache usage, cost, and loaded sk
 pi install npm:@giladbarnea/pi-custom-footer
 ```
 
-Above the editor, see your model, thinking level, session name and ID. Loaded skills get their own row, with token ages.
+Supports Pi 1.4.x and 1.5.x, the latest stable minor and its predecessor.
+
+Above the editor, see your model, thinking level, session name and ID. Loaded skills get their own row, with token ages. Compaction and context edits remove skills whose loaded text is no longer present verbatim. Restoring that text restores the skill.
 
 Below the editor, see:
 
@@ -45,4 +47,4 @@ npm test
 npm run check
 ```
 
-Tests cover rendered values, skill tracking, cache reuse, session changes, and forks. They make no model calls.
+Tests cover rendered values, skill tracking, cache reuse, session changes, forks, compaction, and native context edits. SDK tests use a local scripted provider, with no external model calls.

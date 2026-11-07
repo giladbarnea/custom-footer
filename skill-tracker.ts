@@ -1,3 +1,4 @@
+import type { ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -37,8 +38,10 @@ function isValidSkillName(name: string): boolean {
 	return name.length <= MAX_SKILL_NAME_LENGTH && SKILL_NAME_PATTERN.test(name);
 }
 
-function expandedSkillNames(content: unknown): string[] {
-	return [...textFromContent(content).matchAll(/<skill name="([^"]+)" location="[^"]+">/g)]
+function expandedSkillNames(content: unknown, originalContent: unknown): string[] {
+	const text = textFromContent(content);
+	return [...textFromContent(originalContent).matchAll(/<skill name="([^"]+)" location="[^"]+">[\s\S]*?<\/skill>/g)]
+		.filter((match) => text.includes(match[0]))
 		.map((match) => match[1]!)
 		.filter(isValidSkillName);
 }
@@ -74,17 +77,21 @@ function latestCompactionTimestamp(history: readonly unknown[]): number | null {
 }
 
 /**
- * Return skills in the effective model history with their first valid post-load prompt size.
+ * Return skills whose loaded text survives verbatim in Pi's projection, with their first valid post-load prompt size.
  *
  * @example
  * getLoadedSkills([], [], "/workspace") // []
  */
 export function getLoadedSkills(
-	history: readonly unknown[],
+	entries: readonly ProjectedSessionEntry[],
 	skills: readonly SkillLocation[],
 	cwd: string,
 ): LoadedSkill[] {
-	const compactionTimestamp = latestCompactionTimestamp(history);
+	const history: Array<{ message: unknown; originalContent: unknown }> = entries.flatMap(({ sourceEntry, messages }) => messages.map((message) => ({
+		message,
+		originalContent: sourceEntry.type === "message" && "content" in sourceEntry.message ? sourceEntry.message.content : undefined,
+	})));
+	const compactionTimestamp = latestCompactionTimestamp(history.map(({ message }) => message));
 	const loadedSkills = new Map<string, number | null>();
 	const pendingBaselines = new Set<string>();
 	const skillNamesByToolCall = new Map<string, string[]>();
@@ -94,16 +101,17 @@ export function getLoadedSkills(
 		pendingBaselines.add(skillName);
 	};
 
-	for (const message of history) {
+	for (const { message, originalContent } of history) {
 		if (!isRecord(message)) continue;
 
 		if (message.role === "user") {
-			for (const skillName of expandedSkillNames(message.content)) markLoaded(skillName);
+			for (const skillName of expandedSkillNames(message.content, originalContent)) markLoaded(skillName);
 			continue;
 		}
 
 		if (message.role === "toolResult") {
 			if (message.isError !== false || typeof message.toolCallId !== "string") continue;
+			if (!textFromContent(message.content).includes(textFromContent(originalContent))) continue;
 			for (const skillName of skillNamesByToolCall.get(message.toolCallId) ?? []) markLoaded(skillName);
 			continue;
 		}

@@ -29,7 +29,10 @@ const context = {
     getSessionId: () => sessionId,
     getLeafId: () => leafId,
     getBranch() { calls.branch++; return branch; },
-    buildSessionContext() { calls.history++; return { messages }; },
+    buildSessionProjection() {
+      calls.history++;
+      return { entries: messages.map((message) => ({ sourceEntry: { type: "message", message }, messages: [message] })) };
+    },
   },
   ui: {
     setFooter(factory) { footerFactory = factory; },
