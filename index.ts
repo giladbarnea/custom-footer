@@ -19,7 +19,8 @@
  *
  * Known gaps reviewed September 30, 2026, against Pi 0.99.0:
  * - Costs omit codemode and nested-model usage recorded on tool results.
- * - Loaded skills omit successful reads recorded in tool-result nestedCalls.
+ * - Loaded skills omit successful reads recorded in tool-result nestedCalls
+ *   that ran without this extension, which records their returned text.
  * - The header omits the routed physical model and thinking level.
  * - After compaction, unknown usage falls back to the selected model's window
  *   or 200k, ignoring the known physical window from getContextUsage().
@@ -28,7 +29,10 @@ import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 
-import { getLoadedSkills, type SkillLocation } from "./skill-tracker.ts";
+import {
+	getLoadedSkills, isNestedSkillRead, NESTED_SKILL_READ_ENTRY, nestedReadText, nestedSkillReadTexts,
+	type NestedSkillRead, type SkillLocation,
+} from "./skill-tracker.ts";
 
 // ── Layout constants ────────────────────────────────────────────────────────
 
@@ -586,17 +590,19 @@ export default function (pi: ExtensionAPI) {
 	let gitDirty = false;
 	let thinkingLevel = "off";
 	let loadedSkills: Array<{ name: string; tokenAge: number | null }> = [];
+	const runningNestedSkillReads = new Set<string>();
 	let skillsDirty = true;
 	let skillContextChangeId: string | undefined;
 	let snapshot: FooterSnapshot | undefined;
 
 	// ── Rendering ────────────────────────────────────────────────────────
 
-	function refreshLoadedSkills(ctx: ExtensionContext, currentContextTokens: number | null): void {
+	function refreshLoadedSkills(ctx: ExtensionContext, branch: readonly SessionEntry[], currentContextTokens: number | null): void {
 		loadedSkills = getLoadedSkills(
 			ctx.sessionManager.buildSessionProjection().entries,
 			getSkillLocations(pi),
 			ctx.cwd,
+			nestedSkillReadTexts(branch),
 		).map(({ name, loadedAtTokens }) => ({
 			name,
 			tokenAge:
@@ -618,7 +624,7 @@ export default function (pi: ExtensionAPI) {
 		// Boundary edits commit after turn_end, which may already have rendered the old projection.
 		const contextChangeId = branch.reduce<string | undefined>((latest, entry) =>
 			entry.type === "context_edit" || entry.type === "compaction" ? entry.id : latest, undefined);
-		if (skillsDirty || contextChangeId !== skillContextChangeId) refreshLoadedSkills(currentCtx, usage?.tokens ?? null);
+		if (skillsDirty || contextChangeId !== skillContextChangeId) refreshLoadedSkills(currentCtx, branch, usage?.tokens ?? null);
 		skillContextChangeId = contextChangeId;
 		skillsDirty = false;
 		snapshot = {
@@ -804,8 +810,18 @@ export default function (pi: ExtensionAPI) {
 		gitBranch = null;
 		gitDirty = false;
 		loadedSkills = [];
+		runningNestedSkillReads.clear();
 		snapshot = undefined;
 		skillsDirty = true;
+	});
+
+	pi.on("tool_execution_start", async (event, ctx) => {
+		if (isNestedSkillRead(event, getSkillLocations(pi), ctx.cwd)) runningNestedSkillReads.add(event.toolCallId);
+	});
+	pi.on("tool_execution_end", async (event) => {
+		if (!runningNestedSkillReads.delete(event.toolCallId)) return;
+		const readText = nestedReadText(event);
+		if (readText !== null) pi.appendEntry<NestedSkillRead>(NESTED_SKILL_READ_ENTRY, { toolCallId: event.toolCallId, text: readText });
 	});
 
 	pi.on("model_select", async (_event: any, ctx: any) => updateCtx(ctx));

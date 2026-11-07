@@ -7,7 +7,7 @@ import { createJiti } from "jiti";
 const jiti = createJiti(import.meta.url);
 const { getLoadedSkills: getProjectedLoadedSkills } = await jiti.import("../skill-tracker.ts");
 const projectedEntries = (messages) => messages.map((message) => ({ sourceEntry: { type: "message", message }, messages: [message] }));
-const getLoadedSkills = (messages, skills, cwd) => getProjectedLoadedSkills(projectedEntries(messages), skills, cwd);
+const getLoadedSkills = (messages, skills, cwd) => getProjectedLoadedSkills(projectedEntries(messages), skills, cwd, new Map());
 const customFooterModule = await jiti.import("../index.ts");
 const customFooter = customFooterModule.default ?? customFooterModule;
 

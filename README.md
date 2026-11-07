@@ -1,5 +1,5 @@
 ---
-last_updated: 2026-11-06T23-44
+last_updated: 2026-11-07T17-30
 ---
 
 <div align="center">
@@ -22,7 +22,7 @@ pi install npm:@giladbarnea/pi-custom-footer
 
 Supports Pi 1.4.x and 1.5.x, the latest stable minor and its predecessor.
 
-Above the editor, see your model, thinking level, session name and ID. Loaded skills get their own row, with token ages. Compaction and context edits remove skills whose loaded text is no longer present verbatim. Restoring that text restores the skill.
+Above the editor, see your model, thinking level, session name and ID. Loaded skills get their own row, with token ages. Compaction and context edits remove skills whose loaded text is no longer present verbatim. Restoring that text restores the skill. A skill read inside a codemode script counts when the script output carries that read verbatim. Pi does not keep nested read results, so the footer records the read text in a custom session entry that is never sent to the model.
 
 Below the editor, see:
 

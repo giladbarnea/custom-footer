@@ -1,4 +1,4 @@
-import type { ProjectedSessionEntry } from "@earendil-works/pi-coding-agent";
+import type { ProjectedSessionEntry, SessionEntry, ToolExecutionEndEvent, ToolExecutionStartEvent } from "@earendil-works/pi-coding-agent";
 import { homedir } from "node:os";
 import { resolve } from "node:path";
 
@@ -11,6 +11,14 @@ export type LoadedSkill = {
 	loadedAtTokens: number | null;
 	name: string;
 };
+
+/** A successful nested skill read's returned text, kept as a custom session entry because Pi does not persist nested results. */
+export type NestedSkillRead = {
+	toolCallId: string;
+	text: string;
+};
+
+export const NESTED_SKILL_READ_ENTRY = "custom-footer-nested-skill-read";
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -59,6 +67,57 @@ function skillNamesForReadPath(rawPath: string, skills: readonly SkillLocation[]
 	return skills.flatMap((skill) => path === resolvePath(cwd, skill.filePath) ? [skill.name] : []);
 }
 
+/**
+ * Whether a starting tool call is a nested skill read, such as one from a codemode script.
+ *
+ * @example
+ * isNestedSkillRead({ type: "tool_execution_start", toolCallId: "c/1", toolName: "read", args: { path: "/s/SKILL.md" }, parentToolCallId: "c" }, [{ name: "s", filePath: "/s/SKILL.md" }], "/") // true
+ */
+export function isNestedSkillRead(event: ToolExecutionStartEvent, skills: readonly SkillLocation[], cwd: string): boolean {
+	return event.parentToolCallId !== undefined && readPaths({ name: event.toolName, arguments: event.args })
+		.some((path) => skillNamesForReadPath(path, skills, cwd).length > 0);
+}
+
+/**
+ * The text a successful nested read returned to its caller, to match against the parent result later.
+ *
+ * @example
+ * nestedReadText({ type: "tool_execution_end", toolCallId: "c/1", toolName: "read", result: { content: [{ type: "text", text: "Body." }] }, isError: false }) // "Body."
+ */
+export function nestedReadText(event: ToolExecutionEndEvent): string | null {
+	return event.isError ? null : textFromContent(event.result?.content);
+}
+
+/**
+ * Nested read texts recorded on a session branch, by nested tool call id.
+ *
+ * @example
+ * nestedSkillReadTexts([]) // Map(0) {}
+ */
+export function nestedSkillReadTexts(branch: readonly SessionEntry[]): Map<string, string> {
+	return new Map(branch.flatMap((entry) => {
+		if (entry.type !== "custom" || entry.customType !== NESTED_SKILL_READ_ENTRY) return [];
+		const { toolCallId, text } = entry.data as NestedSkillRead;
+		return [[toolCallId, text]];
+	}));
+}
+
+/** Skills whose nested read text, captured when the read succeeded, survives verbatim in the projected parent result. */
+function deliveredNestedSkillNames(
+	message: UnknownRecord,
+	skills: readonly SkillLocation[],
+	cwd: string,
+	nestedReadTexts: ReadonlyMap<string, string>,
+): string[] {
+	if (!isRecord(message.nestedCalls) || !Array.isArray(message.nestedCalls.calls)) return [];
+	const deliveredText = textFromContent(message.content);
+	return message.nestedCalls.calls.filter(isRecord).flatMap((call) => {
+		const readText = typeof call.id === "string" ? nestedReadTexts.get(call.id) : undefined;
+		if (readText === undefined || !deliveredText.includes(readText)) return [];
+		return readPaths(call).flatMap((path) => skillNamesForReadPath(path, skills, cwd));
+	});
+}
+
 function assistantPromptTokens(message: UnknownRecord, compactionTimestamp: number | null): number | null {
 	if (message.role !== "assistant" || message.stopReason === "error" || message.stopReason === "aborted") return null;
 	if (compactionTimestamp !== null && (typeof message.timestamp !== "number" || message.timestamp <= compactionTimestamp)) return null;
@@ -80,12 +139,13 @@ function latestCompactionTimestamp(history: readonly unknown[]): number | null {
  * Return skills whose loaded text survives verbatim in Pi's projection, with their first valid post-load prompt size.
  *
  * @example
- * getLoadedSkills([], [], "/workspace") // []
+ * getLoadedSkills([], [], "/workspace", new Map()) // []
  */
 export function getLoadedSkills(
 	entries: readonly ProjectedSessionEntry[],
 	skills: readonly SkillLocation[],
 	cwd: string,
+	nestedReadTexts: ReadonlyMap<string, string>,
 ): LoadedSkill[] {
 	const history: Array<{ message: unknown; originalContent: unknown }> = entries.flatMap(({ sourceEntry, messages }) => messages.map((message) => ({
 		message,
@@ -110,6 +170,7 @@ export function getLoadedSkills(
 		}
 
 		if (message.role === "toolResult") {
+			for (const skillName of deliveredNestedSkillNames(message, skills, cwd, nestedReadTexts)) markLoaded(skillName);
 			if (message.isError !== false || typeof message.toolCallId !== "string") continue;
 			if (!textFromContent(message.content).includes(textFromContent(originalContent))) continue;
 			for (const skillName of skillNamesByToolCall.get(message.toolCallId) ?? []) markLoaded(skillName);
