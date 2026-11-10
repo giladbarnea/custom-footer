@@ -95,6 +95,32 @@ assert.match(output, /90%/);
 assert.match(output, /\$6\.00/);
 assert.match(output, /\$2\.00\/turn/);
 
+// Pi's own footer adds usage entries, such as idle cache warms, to its session totals.
+branch.push({
+  type: "usage", kind: "cache_warm", provider: "anthropic", model: "model-1",
+  usage: { input: 0, output: 1, cacheRead: 100_000, cacheWrite: 0, cost: { total: 0.5 } },
+});
+leafId = "warm-1";
+output = render();
+assert.match(output, /\$6\.50/);
+assert.match(output, /\$2\.00\/turn/, "A warm is not an assistant turn");
+assert.match(output, /300k reused \/ 100k new/);
+assert.match(output, /75\.0% session/);
+assert.match(output, /latest miss 50k re-billed/);
+
+// A warm after expiry rebuilds the cache: its input and cacheWrite count as new tokens.
+// Worked example: new 100k + 2k + 98k = 200k, reused stays 300k, session 300k / 500k = 60.0%.
+branch.push({
+  type: "usage", kind: "cache_warm", provider: "anthropic", model: "model-1",
+  usage: { input: 2_000, output: 1, cacheRead: 0, cacheWrite: 98_000, cost: { total: 0.4 } },
+});
+leafId = "warm-2";
+output = render();
+assert.match(output, /\$6\.90/);
+assert.match(output, /\$2\.00\/turn/, "A warm is not an assistant turn");
+assert.match(output, /300k reused \/ 200k new/);
+assert.match(output, /60\.0% session/);
+
 messages = [
   { role: "user", content: '<skill name="tdd" location="/skills/tdd/SKILL.md">Test first.</skill>' },
   firstAssistant,

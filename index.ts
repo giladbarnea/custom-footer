@@ -496,6 +496,7 @@ interface SessionStats {
 function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
 	let turnCount = 0;
 	let totalCost = 0;
+	let turnCost = 0;
 	let totalReused = 0;
 	let totalFresh = 0;
 	let lastContextTokens = 0;
@@ -509,12 +510,21 @@ function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
 			cacheWasReported = false;
 			continue;
 		}
+		// Like Pi's footer, count usage entries (cache warms) in the totals only: they are not turns.
+		if (entry.type === "usage") {
+			const { input, cacheRead, cacheWrite, cost } = entry.usage;
+			totalCost += cost.total;
+			totalReused += cacheRead;
+			totalFresh += input + cacheWrite;
+			continue;
+		}
 		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
 		const message = entry.message as AssistantMessage;
 		if (message.stopReason === "error" || message.stopReason === "aborted") continue;
 		const { input, output, cacheRead, cacheWrite, cost } = message.usage;
 		const promptTokens = input + cacheRead + cacheWrite;
 		turnCount += 1;
+		turnCost += cost.total;
 		totalCost += cost.total;
 		totalReused += cacheRead;
 		totalFresh += input + cacheWrite;
@@ -540,7 +550,7 @@ function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
 		sessionCacheHitRate: totalPrompt > 0 ? (totalReused / totalPrompt) * 100 : null,
 		latestCacheHitRate,
 		latestCacheMissTokens,
-		averageCostPerTurn: turnCount > 0 ? totalCost / turnCount : 0,
+		averageCostPerTurn: turnCount > 0 ? turnCost / turnCount : 0,
 		lastContextTokens,
 	};
 }
