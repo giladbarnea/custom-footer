@@ -24,6 +24,14 @@
  * - The header omits the routed physical model and thinking level.
  * - After compaction, unknown usage falls back to the selected model's window
  *   or 200k, ignoring the known physical window from getContextUsage().
+ *
+ * Known differences from Pi's cache-miss notice, reviewed November 11, 2026,
+ * against Pi 1.4.0 and 1.5.2:
+ * - The footer shows any miss above 1,024 tokens. Pi's notice hides a miss
+ *   under 20k tokens that also costs under $0.10.
+ * - Errored and aborted turns are skipped, as elsewhere in the footer. Pi's
+ *   scan includes them.
+ * - The footer scans the current branch. Pi scans every session entry.
  */
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
@@ -51,6 +59,8 @@ const BRANCH_GLYPH = "";
 const CONTEXT_GAUGE_SYMBOLS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const CONTEXT_GAUGE_STEP_COUNT = CONTEXT_GAUGE_SYMBOLS.length;
 const CACHE_MISS_NOISE_FLOOR_TOKENS = 1_024;
+// Pi's prompt-cache TTL: a miss after a longer idle gap names the gap as its cause.
+const CACHE_TTL_MS = 5 * 60 * 1000;
 // Match Theme.fg, which resets the foreground only. A full reset would punch a
 // hole in any background the caller has already opened, such as the cwd pill.
 const ANSI_FG_RESET = "\x1b[39m";
@@ -152,9 +162,13 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		["cwd", "short"], ["spacing", "bare"],
 		// 4. Drop the branch icon.
 		["branch", "bare"],
-		// 5. Hide whole facts. The cost per turn goes last, because seeing what
-		//    each turn costs is half of what the footer is for.
+		// 5. Hide whole facts. The cost per turn goes last of them, because
+		//    seeing what each turn costs is half of what the footer is for.
 		["reuse", "hidden"], ["cacheSession", "hidden"], ["tokens", "hidden"], ["perTurn", "hidden"],
+		// 6. Drop the cause of a cache miss, keeping its cost. It outranks every
+		//    hidden fact: it shows only on the turn that missed, and says what to
+		//    do about the cost (an idle gap or a model switch).
+		["latest", "bare"],
 	],
 };
 
@@ -482,31 +496,77 @@ function renderThinkingLabel(theme: any, level: string, full: boolean): string {
 
 // ── Session helpers ─────────────────────────────────────────────────────────
 
+/** A cache miss in the terms of Pi's own miss notice. */
+type CacheMiss = { missedTokens: number; missedCost: number; idleMs: number; modelChanged: boolean };
+type PreviousRequest = { promptTokens: number; modelKey: string; timestamp: number; reportedCache: boolean };
+type ModelLookup = Pick<ExtensionContext["modelRegistry"], "find">;
+
+// Mirror pi's own miss detection (detectMiss in dist/core/cache-stats.js, which
+// pi does not export), so the footer reports the numbers of pi's notice.
+function detectCacheMiss(previous: PreviousRequest | undefined, message: AssistantMessage, models: ModelLookup): CacheMiss | null {
+	const { input, cacheRead, cacheWrite, cost } = message.usage;
+	const promptTokens = input + cacheRead + cacheWrite;
+	if (!previous || (cacheRead + cacheWrite === 0 && !previous.reportedCache)) return null;
+	const missedTokens = Math.min(previous.promptTokens, promptTokens) - cacheRead;
+	if (missedTokens <= CACHE_MISS_NOISE_FLOOR_TOKENS) return null;
+	const paidTokens = input + cacheWrite;
+	const paidPerToken = paidTokens > 0 ? (cost.input + cost.cacheWrite) / paidTokens : 0;
+	const readPerToken = cacheRead > 0
+		? cost.cacheRead / cacheRead
+		: (models.find(message.provider, message.model)?.cost.cacheRead ?? 0) / 1_000_000;
+	return {
+		missedTokens,
+		missedCost: missedTokens * Math.max(0, paidPerToken - readPerToken),
+		idleMs: Math.max(0, message.timestamp - previous.timestamp),
+		modelChanged: `${message.provider}/${message.model}` !== previous.modelKey,
+	};
+}
+
+/** The latest miss in its three forms. Ranked: what it cost, then why it
+ * happened, then how many tokens. Without a cost, the tokens take its place.
+ * @example
+ * cacheMissForms({ missedTokens: 199_000, missedCost: 0.38, idleMs: 360_000, modelChanged: false })
+ * // { full: "latest miss after 6m idle: 199k re-billed $0.38", short: "miss 6m idle $0.38", bare: "miss $0.38" }
+ */
+function cacheMissForms(miss: CacheMiss): Required<FactForms> {
+	// Pi's notice shows a cost from one cent, rounded to cents, and an idle gap from the TTL, in whole minutes.
+	const cost = miss.missedCost >= 0.01 ? `$${miss.missedCost.toFixed(2)}` : null;
+	const cause = miss.modelChanged ? "model switch" : miss.idleMs >= CACHE_TTL_MS ? `${Math.round(miss.idleMs / 60_000)}m idle` : null;
+	const tokens = formatTokens(miss.missedTokens);
+	const words = (...parts: (string | null)[]) => parts.filter(Boolean).join(" ");
+	return {
+		full: words("latest miss", cause && `after ${cause}:`, `${tokens} re-billed`, cost),
+		short: words("miss", cause, cost ?? tokens),
+		bare: words("miss", cost ?? tokens),
+	};
+}
+
 interface SessionStats {
 	totalCost: number;
 	totalReused: number;
 	totalFresh: number;
 	sessionCacheHitRate: number | null;
 	latestCacheHitRate: number | null;
-	latestCacheMissTokens: number | null;
+	latestCacheMiss: CacheMiss | null;
 	averageCostPerTurn: number;
 	lastContextTokens: number; // input+output+cacheRead+cacheWrite of the last valid turn
 }
 
-function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
+/** Exported for tests/miss-parity.mjs, which compares the mirrored miss detection with Pi's. */
+export function getSessionStats(branch: readonly SessionEntry[], models: ModelLookup): SessionStats {
 	let turnCount = 0;
 	let totalCost = 0;
 	let turnCost = 0;
 	let totalReused = 0;
 	let totalFresh = 0;
 	let lastContextTokens = 0;
-	let previousPromptTokens: number | null = null;
+	let previousRequest: PreviousRequest | undefined;
 	let cacheWasReported = false;
 	let latestCacheHitRate: number | null = null;
-	let latestCacheMissTokens: number | null = null;
+	let latestCacheMiss: CacheMiss | null = null;
 	for (const entry of branch) {
 		if (entry.type === "compaction" || entry.type === "branch_summary") {
-			previousPromptTokens = null;
+			previousRequest = undefined;
 			cacheWasReported = false;
 			continue;
 		}
@@ -516,6 +576,13 @@ function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
 			totalCost += cost.total;
 			totalReused += cacheRead;
 			totalFresh += input + cacheWrite;
+			// Like pi's miss detection, the next turn's miss and idle gap count from a cache warm.
+			const warmPromptTokens = input + cacheRead + cacheWrite;
+			if (entry.kind === "cache_warm" && warmPromptTokens > 0) {
+				previousRequest = {
+					promptTokens: warmPromptTokens, modelKey: `${entry.provider}/${entry.model}`, timestamp: Date.parse(entry.timestamp), reportedCache: true,
+				};
+			}
 			continue;
 		}
 		if (entry.type !== "message" || entry.message?.role !== "assistant") continue;
@@ -534,12 +601,11 @@ function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
 		const cacheReported = cacheRead + cacheWrite > 0;
 		const cacheKnowledgeAvailable = cacheReported || cacheWasReported;
 		latestCacheHitRate = cacheKnowledgeAvailable ? (cacheRead / promptTokens) * 100 : null;
-		latestCacheMissTokens = null;
-		if (previousPromptTokens !== null && cacheKnowledgeAvailable) {
-			const missedTokens = Math.min(previousPromptTokens, promptTokens) - cacheRead;
-			latestCacheMissTokens = missedTokens > CACHE_MISS_NOISE_FLOOR_TOKENS ? missedTokens : null;
-		}
-		previousPromptTokens = promptTokens;
+		latestCacheMiss = detectCacheMiss(previousRequest, message, models);
+		previousRequest = {
+			promptTokens, modelKey: `${message.provider}/${message.model}`, timestamp: message.timestamp,
+			reportedCache: (previousRequest?.reportedCache ?? false) || cacheReported,
+		};
 		cacheWasReported ||= cacheReported;
 	}
 	const totalPrompt = totalReused + totalFresh;
@@ -549,7 +615,7 @@ function getSessionStats(branch: readonly SessionEntry[]): SessionStats {
 		totalFresh,
 		sessionCacheHitRate: totalPrompt > 0 ? (totalReused / totalPrompt) * 100 : null,
 		latestCacheHitRate,
-		latestCacheMissTokens,
+		latestCacheMiss,
 		averageCostPerTurn: turnCount > 0 ? turnCost / turnCount : 0,
 		lastContextTokens,
 	};
@@ -629,7 +695,7 @@ export default function (pi: ExtensionAPI) {
 		const model: ExtensionContext["model"] = currentCtx.model;
 		if (snapshot && snapshot.manager === manager && snapshot.sessionId === sessionId && snapshot.leafId === leafId && snapshot.model === model) return snapshot;
 		const branch = manager.getBranch();
-		const stats = getSessionStats(branch);
+		const stats = getSessionStats(branch, currentCtx.modelRegistry);
 		const usage = currentCtx.getContextUsage();
 		// Boundary edits commit after turn_end, which may already have rendered the old projection.
 		const contextChangeId = branch.reduce<string | undefined>((latest, entry) =>
@@ -710,7 +776,7 @@ export default function (pi: ExtensionAPI) {
 			? paint.ramp(CACHE_STOPS, sessionHit, `${sessionHit.toFixed(1)}% session`)
 			: theme.fg("dim", "no cache yet");
 		const latestHit = stats.latestCacheHitRate;
-		const missedTokens = stats.latestCacheMissTokens;
+		const missForms = stats.latestCacheMiss && cacheMissForms(stats.latestCacheMiss);
 		const footerFacts: Partial<Record<FooterFact, FactForms>> = {
 			branch: gitBranch
 				? { full: `${paint.token(PLACE_TOKEN, `${BRANCH_GLYPH} ${gitBranch}`)}${dirty}`, bare: `${paint.token(PLACE_TOKEN, gitBranch)}${dirty}` }
@@ -724,10 +790,14 @@ export default function (pi: ExtensionAPI) {
 			cost: { full: cost(formatCost(stats.totalCost)), short: cost(stats.totalCost.toFixed(1)), bare: cost(stats.totalCost.toFixed(0)) },
 			perTurn: { full: paint.quiet(SPEND_TOKEN, `$${formatCost(stats.averageCostPerTurn)}/turn`) },
 			cacheSession: { full: `${label("cache")}${sessionHitText}`, bare: sessionHitText },
-			latest: missedTokens != null
-				? { full: theme.fg("error", `latest miss ${formatTokens(missedTokens)} re-billed`), short: theme.fg("error", `miss ${formatTokens(missedTokens)}`) }
+			latest: missForms
+				? { full: theme.fg("error", missForms.full), short: theme.fg("error", missForms.short), bare: theme.fg("error", missForms.bare) }
 				: latestHit != null
-					? { full: paint.ramp(CACHE_STOPS, latestHit, `latest ${latestHit.toFixed(1)}%`), short: paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`) }
+					? {
+						full: paint.ramp(CACHE_STOPS, latestHit, `latest ${latestHit.toFixed(1)}%`),
+						short: paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`),
+						bare: paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`),
+					}
 					: undefined,
 			reuse: {
 				full: paint.ramp(CACHE_STOPS, sessionHit ?? 0, formatTokens(stats.totalReused)) +
