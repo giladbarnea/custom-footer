@@ -33,6 +33,10 @@
  *   scan includes them.
  * - The footer scans the current branch. Pi scans every session entry.
  */
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
+
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
@@ -65,6 +69,11 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 // hole in any background the caller has already opened, such as the cwd pill.
 const ANSI_FG_RESET = "\x1b[39m";
 const QUIET_BLEND = 0.38;
+const PACE_BAR_CELLS = 9;
+// The quota tool refreshes its cache every 5 minutes while in use. A reading older than half an hour has gone stale.
+const PACE_STALE_AFTER_MS = 30 * 60 * 1000;
+// The quota tool's own rule (FABLE_SHARE_OF_WEEKLY in its pick.py): Fable use counts at half weight against the shared Claude week.
+const FABLE_SHARE_OF_WEEKLY = 0.5;
 
 // ── Colour rules ────────────────────────────────────────────────────────────
 // Hue means one of two things here and nothing else.
@@ -72,7 +81,9 @@ const QUIET_BLEND = 0.38;
 // 1. A RAMP is a measurement. Its colour moves with the value, and it is loud
 //    only where there is something to act on. CONTEXT_STOPS runs quiet to loud
 //    as the window fills. CACHE_STOPS is that same scale mirrored, because a
-//    full cache is the good end and an empty one is the problem.
+//    full cache is the good end and an empty one is the problem. PACE_STOPS is
+//    the quota tool's heat map: green at the ideal 1.0×, cool where allowance
+//    goes unused, amber then red where it runs out early.
 // 2. A FAMILY is a category. One token per kind of fact, held everywhere it
 //    appears, so the shape of the footer becomes learnable:
 //        accent         place    cwd, branch, dirty marker
@@ -94,6 +105,14 @@ const CONTEXT_STOPS: readonly Stop[] = [
 
 /** The context ramp mirrored, so a full cache is quiet and an empty one is loud. */
 const CACHE_STOPS: readonly Stop[] = CONTEXT_STOPS.map((stop) => ({ ...stop, at: 100 - stop.at })).reverse();
+
+/** The quota tool's pace heat map (DashboardPalette.pace) on theme tokens, over pacePosition's scale. `mdLink` is the theme's cool blue. */
+const PACE_STOPS: readonly Stop[] = [
+	{ at: -1, token: "mdLink" },
+	{ at: 0, token: "success" },
+	{ at: 0.5, token: "warning" },
+	{ at: 1, token: "error" },
+];
 
 const PLACE_TOKEN = "accent";
 const SPEND_TOKEN = "warning";
@@ -117,9 +136,9 @@ const THINKING_LEVELS: Record<string, { full: string; short: string; token: stri
 // up a kind of detail that matters more than the phase before it, and within a
 // phase the least needed fact goes first.
 
-type Form = "full" | "short" | "bare" | "hidden";
+type Form = "full" | "short" | "brief" | "bare" | "least" | "hidden";
 /** A fact's text in each form it has. A step names only forms its fact has. */
-type FactForms = { full: string } & Partial<Record<"short" | "bare", string>>;
+type FactForms = { full: string } & Partial<Record<"short" | "brief" | "bare" | "least", string>>;
 /** One row of facts. Each inner list is one group, joined by the narrow joiner. */
 type Row<Key extends string> = readonly (readonly Key[])[];
 type Ladder<Key extends string> = {
@@ -127,7 +146,7 @@ type Ladder<Key extends string> = {
 	steps: readonly (readonly [Key | "spacing", Form])[];
 };
 type HeaderFact = "model" | "thinking" | "sessionName" | "sessionId";
-type FooterFact = "branch" | "cwd" | "context" | "tokens" | "cost" | "perTurn" | "cacheSession" | "latest" | "reuse";
+type FooterFact = "branch" | "cwd" | "context" | "tokens" | "cost" | "perTurn" | "cacheSession" | "latest" | "reuse" | "pace";
 
 const SPACING = {
 	full: { separator: WIDE_SEPARATOR, joiner: "  " },
@@ -152,9 +171,12 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		[["branch"], ["cwd"]],
 		[["context", "tokens"], ["cost", "perTurn"]],
 		[["cacheSession"], ["latest"], ["reuse"]],
+		[["pace"]],
 	],
 	steps: [
-		// 1. Drop the labels the values already imply.
+		// 1. Drop what the values already imply. First the pace bar and the words
+		//    "resets in": the bar draws what the two rates say. Then the labels.
+		["pace", "short"],
 		["tokens", "short"], ["context", "bare"], ["cacheSession", "bare"],
 		// 2. Shorten the readings: the latest cache figure, then the cost, rounded twice.
 		["latest", "short"], ["cost", "short"], ["cost", "bare"],
@@ -162,13 +184,25 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		["cwd", "short"], ["spacing", "bare"],
 		// 4. Drop the branch icon.
 		["branch", "bare"],
-		// 5. Hide whole facts. The cost per turn goes last of them, because
-		//    seeing what each turn costs is half of what the footer is for.
-		["reuse", "hidden"], ["cacheSession", "hidden"], ["tokens", "hidden"], ["perTurn", "hidden"],
+		// 5. Hide whole facts. First a stale quota reading's age: it outlasts the
+		//    bar, the labels and the whitespace, so a laptop still sees that the
+		//    rates are old, and it goes before every other part of the pace left.
+		//    Then the burn rate and the reset time: the sign keeps the verdict,
+		//    and the target is the number to act on. The word
+		//    "target" outlasts the cache and token facts, because it names that
+		//    number once the burn rate is gone. The cost per turn goes last of
+		//    them, because seeing what each turn costs is half of what the footer
+		//    is for. The target rate hides only at the very end, in step 7.
+		["pace", "brief"], ["pace", "bare"],
+		["reuse", "hidden"], ["cacheSession", "hidden"], ["tokens", "hidden"], ["pace", "least"], ["perTurn", "hidden"],
 		// 6. Drop the cause of a cache miss, keeping its cost. It outranks every
 		//    hidden fact: it shows only on the turn that missed, and says what to
 		//    do about the cost (an idle gap or a model switch).
 		["latest", "bare"],
+		// 7. Last, hide the target rate. Because the footer takes the fullest
+		//    state with the fewest lines, this fires only where the target alone
+		//    would add a line, as on a phone with the keyboard up.
+		["pace", "hidden"],
 	],
 };
 
@@ -528,7 +562,7 @@ function detectCacheMiss(previous: PreviousRequest | undefined, message: Assista
  * cacheMissForms({ missedTokens: 199_000, missedCost: 0.38, idleMs: 360_000, modelChanged: false })
  * // { full: "latest miss after 6m idle: 199k re-billed $0.38", short: "miss 6m idle $0.38", bare: "miss $0.38" }
  */
-function cacheMissForms(miss: CacheMiss): Required<FactForms> {
+function cacheMissForms(miss: CacheMiss): Record<"full" | "short" | "bare", string> {
 	// Pi's notice shows a cost from one cent, rounded to cents, and an idle gap from the TTL, in whole minutes.
 	const cost = miss.missedCost >= 0.01 ? `$${miss.missedCost.toFixed(2)}` : null;
 	const cause = miss.modelChanged ? "model switch" : miss.idleMs >= CACHE_TTL_MS ? `${Math.round(miss.idleMs / 60_000)}m idle` : null;
@@ -539,6 +573,113 @@ function cacheMissForms(miss: CacheMiss): Required<FactForms> {
 		short: words("miss", cause, cost ?? tokens),
 		bare: words("miss", cost ?? tokens),
 	};
+}
+
+// ── Quota pace ──────────────────────────────────────────────────────────────
+// Read from the cache file the author's `quota` tool writes. The footer never
+// runs the tool and never fetches: it shows the last reading any quota run
+// left there, and adds the reading's age once it is stale. It reads the file
+// once per snapshot, not per redraw.
+
+type QuotaPool = "CLAUDE" | "FABLE" | "CODEX";
+type WeeklyWindow = { used_pct: number; window_start: string; window_duration_seconds: number };
+type QuotaCache = Record<string, { written_at?: string; usages?: { name: string; weekly: WeeklyWindow }[] }>;
+/** One weekly limit's pace. `used` and `elapsed` are shares of the window, 0 to 1. `ageMs` is how old the reading is. */
+type Pace = { burn: number; target: number; used: number; elapsed: number; resetsInMs: number; ageMs: number };
+
+function quotaCacheFile(): string {
+	return join(process.env.XDG_CACHE_HOME ?? join(homedir(), ".cache"), "quota", "provider-usage.json");
+}
+
+/** The weekly pool a model spends from.
+ * @example
+ * quotaPool({ provider: "anthropic", id: "claude-fable-5-2" }) // "FABLE"
+ */
+function quotaPool(model: ExtensionContext["model"]): QuotaPool | null {
+	if (model?.provider === "openai-codex") return "CODEX";
+	if (model?.provider !== "anthropic") return null;
+	return model.id.includes("fable") ? "FABLE" : "CLAUDE";
+}
+
+/** Burn and target rate of one weekly window, as the quota tool computes them. Null outside the window.
+ * @example
+ * windowPace({ used_pct: 15, window_start: "2026-01-01T00:00:00Z", window_duration_seconds: 1000 }, Date.parse("2026-01-01T00:01:40Z"))
+ * // { burn: 1.5, target: 0.944…, used: 0.15, elapsed: 0.1, resetsInMs: 900_000 }
+ * The age is the caller's: it comes from the provider entry, not the window.
+ */
+function windowPace(weekly: WeeklyWindow, now: number): Omit<Pace, "ageMs"> | null {
+	const durationMs = weekly.window_duration_seconds * 1000;
+	const elapsedMs = now - Date.parse(weekly.window_start);
+	if (elapsedMs <= 0 || elapsedMs >= durationMs) return null;
+	const used = weekly.used_pct / 100;
+	const elapsed = elapsedMs / durationMs;
+	return { burn: used / elapsed, target: Math.max(0, 1 - used) / (1 - elapsed), used, elapsed, resetsInMs: durationMs - elapsedMs };
+}
+
+/** The pace of the model's pool, from the quota cache. Fable's target is the quota tool's pick score:
+ * its own target rate, capped by the room left in the shared Claude week. The age is that of the
+ * provider entry holding the pool, which Claude and Fable share.
+ */
+function readPace(model: ExtensionContext["model"], now: number): Pace | null {
+	const pool = quotaPool(model);
+	if (!pool) return null;
+	// The file belongs to another tool. A missing file, another shape or a missing pool all mean no reading.
+	try {
+		const cache: QuotaCache = JSON.parse(readFileSync(quotaCacheFile(), "utf8"));
+		const providerOf = (name: QuotaPool) => Object.values(cache).find((provider) => provider.usages?.some((usage) => usage.name === name))!;
+		const paceOf = (name: QuotaPool): Omit<Pace, "ageMs"> | null => windowPace(providerOf(name).usages!.find((usage) => usage.name === name)!.weekly, now);
+		const ageMs = Math.max(0, now - Date.parse(providerOf(pool).written_at!));
+		const pace = paceOf(pool);
+		if (!pace || Number.isNaN(ageMs)) return null;
+		if (pool !== "FABLE") return { ...pace, ageMs };
+		const claude = paceOf("CLAUDE");
+		return claude && { ...pace, target: Math.min(pace.target, claude.target / FABLE_SHARE_OF_WEEKLY), ageMs };
+	} catch {
+		return null;
+	}
+}
+
+/** Where a rate sits on PACE_STOPS, by its distance from the ideal 1.0×. Mirrors the quota tool's
+ * DashboardPalette.pace: a burn rate heats above 1.0× (amber at 1.25×, red at 2×) and cools below it;
+ * a target rate runs the other way. Both are ideal within 5% of 1.0×.
+ * @example
+ * [pacePosition(1, false), pacePosition(1.25, false), pacePosition(2, false), pacePosition(0.25, false)] // [0, 0.5, 1, -1]
+ * [pacePosition(0.8, true), pacePosition(4, true)] // [0.5, -1]
+ */
+function pacePosition(rate: number, isTarget: boolean): number {
+	const pressure = (isTarget ? -1 : 1) * Math.log2(rate);
+	const idealBand = Math.log2(1.05);
+	const amberPoint = Math.log2(1.25);
+	if (pressure < -idealBand) return -Math.min(1, (-pressure - idealBand) / (2 - idealBand));
+	if (pressure <= idealBand) return 0;
+	if (pressure <= amberPoint) return 0.5 * (pressure - idealBand) / (amberPoint - idealBand);
+	return 0.5 + 0.5 * Math.min(1, (pressure - amberPoint) / (1 - amberPoint));
+}
+
+/** The used share (●) against the elapsed share (┊) of the window. The dot passes the marker when use is ahead of time.
+ * @example
+ * paceBar(0.55, 0.6, String, String) // "━━━━●┊───"
+ * paceBar(0.9, 0.85, String, String) // "━━━━━━┊●─"
+ */
+function paceBar(used: number, elapsed: number, heat: (text: string) => string, quiet: (text: string) => string): string {
+	const first = Math.round(Math.min(used, elapsed) * (PACE_BAR_CELLS - 2));
+	const second = Math.max(first + 1, Math.round(Math.min(1, Math.max(used, elapsed)) * (PACE_BAR_CELLS - 1)));
+	const between = second - first - 1;
+	const after = "─".repeat(PACE_BAR_CELLS - 1 - second);
+	return used > elapsed
+		? `${heat("━".repeat(first))}${quiet("┊")}${heat(`${"━".repeat(between)}●`)}${quiet(after)}`
+		: `${heat(`${"━".repeat(first)}●`)}${quiet(`${"─".repeat(between)}┊${after}`)}`;
+}
+
+/** A duration in the quota tool's own format: time left, or a reading's age.
+ * @example
+ * [formatRemaining(45_000_000), formatRemaining(110_000_000), formatRemaining(1_800_000)] // ["12h", "1d 6h", "30m"]
+ */
+function formatRemaining(milliseconds: number): string {
+	const hours = Math.floor(milliseconds / 3_600_000);
+	if (hours >= 24) return `${Math.floor(hours / 24)}d ${hours % 24}h`;
+	if (hours > 0) return `${hours}h`;
+	return `${Math.floor(milliseconds / 60_000)}m`;
 }
 
 interface SessionStats {
@@ -655,6 +796,7 @@ interface FooterSnapshot {
 	stats: SessionStats;
 	context: ReturnType<typeof getContextPercent>;
 	session: DisplaySession;
+	pace: Pace | null;
 }
 
 // ── Extension entry point ───────────────────────────────────────────────────
@@ -707,6 +849,7 @@ export default function (pi: ExtensionAPI) {
 			manager, sessionId, leafId, model, stats,
 			context: getContextPercent(currentCtx, stats.lastContextTokens, usage),
 			session: getDisplaySession(currentCtx, currentCtx.cwd || ".", pi),
+			pace: readPace(model, Date.now()),
 		};
 		return snapshot;
 	}
@@ -753,7 +896,7 @@ export default function (pi: ExtensionAPI) {
 
 	function renderBelow(width: number, theme: any): string[] {
 		if (!currentCtx) return [];
-		const { stats, context: { pct, window, tokens } } = getSnapshot();
+		const { stats, context: { pct, window, tokens }, pace } = getSnapshot();
 		const paint = makePainter(theme);
 		const label = (text: string) => theme.fg("dim", `${text} `);
 		const pill = (text: string) => theme.bg("selectedBg", paint.token(PLACE_TOKEN, theme.bold(text)));
@@ -777,6 +920,24 @@ export default function (pi: ExtensionAPI) {
 			: theme.fg("dim", "no cache yet");
 		const latestHit = stats.latestCacheHitRate;
 		const missForms = stats.latestCacheMiss && cacheMissForms(stats.latestCacheMiss);
+		const paceForms = (reading: Pace): FactForms => {
+			const dim = (text: string) => theme.fg("dim", text);
+			const burnHeat = (text: string) => paint.ramp(PACE_STOPS, pacePosition(reading.burn, false), text);
+			const burn = burnHeat(`${reading.burn.toFixed(2)}×`);
+			const target = paint.ramp(PACE_STOPS, pacePosition(reading.target, true), `${reading.target.toFixed(2)}×`);
+			// The sign carries the verdict, and colour repeats it.
+			const sign = reading.burn > reading.target ? theme.fg("error", ">") : dim("≤");
+			const resets = formatRemaining(reading.resetsInMs);
+			// A stale reading keeps showing, with its age until "brief", the form without it.
+			const age = reading.ageMs > PACE_STALE_AFTER_MS ? dim(` · ${formatRemaining(reading.ageMs)} old`) : "";
+			return {
+				full: `${label("burn")}${paceBar(reading.used, reading.elapsed, burnHeat, dim)} ${burn} ${sign} ${label("target")}${target}${dim(` · resets in ${resets}`)}${age}`,
+				short: `${label("burn")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}${age}`,
+				brief: `${label("burn")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}`,
+				bare: `${sign} ${label("target")}${target}`,
+				least: `${sign} ${target}`,
+			};
+		};
 		const footerFacts: Partial<Record<FooterFact, FactForms>> = {
 			branch: gitBranch
 				? { full: `${paint.token(PLACE_TOKEN, `${BRANCH_GLYPH} ${gitBranch}`)}${dirty}`, bare: `${paint.token(PLACE_TOKEN, gitBranch)}${dirty}` }
@@ -803,6 +964,7 @@ export default function (pi: ExtensionAPI) {
 				full: paint.ramp(CACHE_STOPS, sessionHit ?? 0, formatTokens(stats.totalReused)) +
 					theme.fg("dim", ` reused / ${formatTokens(stats.totalFresh)} new`),
 			},
+			pace: pace ? paceForms(pace) : undefined,
 		};
 		return fitFacts(footerFacts, FOOTER_LADDER, width, theme);
 	}
