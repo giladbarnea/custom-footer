@@ -37,8 +37,9 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import type { AssistantMessage } from "@earendil-works/pi-ai";
-import type { ExtensionAPI, ExtensionContext, SessionEntry, Theme } from "@earendil-works/pi-coding-agent";
+import * as piAi from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Model } from "@earendil-works/pi-ai";
+import { SettingsManager, type ExtensionAPI, type ExtensionContext, type SessionEntry, type Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, visibleWidth, type TUI } from "@earendil-works/pi-tui";
 
 import {
@@ -70,6 +71,10 @@ const CACHE_TTL_MS = 5 * 60 * 1000;
 const ANSI_FG_RESET = "\x1b[39m";
 const QUIET_BLEND = 0.38;
 const PACE_BAR_CELLS = 9;
+const MINUTE_MS = 60_000;
+// pi-keep-cache-warm's session entries and tool, read only while that extension is loaded.
+const KEEP_CACHE_WARM_ENTRY = "keep-cache-warm";
+const KEEP_CACHE_WARM_TOOL = "keep_cache_warm";
 // The quota tool refreshes its cache every 5 minutes while in use. A reading older than half an hour has gone stale.
 const PACE_STALE_AFTER_MS = 30 * 60 * 1000;
 // The quota tool's own rule (FABLE_SHARE_OF_WEEKLY in its pick.py): Fable use counts at half weight against the shared Claude week.
@@ -146,7 +151,7 @@ type Ladder<Key extends string> = {
 	steps: readonly (readonly [Key | "spacing", Form])[];
 };
 type HeaderFact = "model" | "thinking" | "sessionName" | "sessionId";
-type FooterFact = "branch" | "cwd" | "context" | "tokens" | "cost" | "perTurn" | "cacheSession" | "latest" | "reuse" | "pace";
+type FooterFact = "branch" | "cwd" | "context" | "tokens" | "cost" | "perTurn" | "cacheSession" | "latest" | "expiry" | "reuse" | "pace";
 
 const SPACING = {
 	full: { separator: WIDE_SEPARATOR, joiner: "  " },
@@ -170,14 +175,14 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 	rows: [
 		[["branch"], ["cwd"]],
 		[["context", "tokens"], ["cost", "perTurn"]],
-		[["cacheSession"], ["latest"], ["reuse"]],
+		[["cacheSession"], ["latest"], ["expiry"], ["reuse"]],
 		[["pace"]],
 	],
 	steps: [
 		// 1. Drop what the values already imply. First the pace bar and the words
 		//    "resets in": the bar draws what the two rates say. Then the labels.
 		["pace", "short"],
-		["tokens", "short"], ["context", "bare"], ["cacheSession", "bare"],
+		["tokens", "short"], ["context", "bare"], ["cacheSession", "bare"], ["expiry", "short"],
 		// 2. Shorten the readings: the latest cache figure, then the cost, rounded twice.
 		["latest", "short"], ["cost", "short"], ["cost", "bare"],
 		// 3. Remove whitespace: the padding inside the cwd pill, then the separators.
@@ -190,11 +195,13 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		//    Then the burn rate and the reset time: the sign keeps the verdict,
 		//    and the target is the number to act on. The word
 		//    "target" outlasts the cache and token facts, because it names that
-		//    number once the burn rate is gone. The cost per turn goes last of
-		//    them, because seeing what each turn costs is half of what the footer
-		//    is for. The target rate hides only at the very end, in step 7.
+		//    number once the burn rate is gone. The time left on the cache
+		//    outlasts it: it says whether to hurry back before a cold restart.
+		//    The cost per turn goes last of them, because seeing what each turn
+		//    costs is half of what the footer is for. The target rate hides only
+		//    at the very end, in step 7.
 		["pace", "brief"], ["pace", "bare"],
-		["reuse", "hidden"], ["cacheSession", "hidden"], ["tokens", "hidden"], ["pace", "least"], ["perTurn", "hidden"],
+		["reuse", "hidden"], ["cacheSession", "hidden"], ["tokens", "hidden"], ["pace", "least"], ["expiry", "hidden"], ["perTurn", "hidden"],
 		// 6. Drop the cause of a cache miss, keeping its cost. It outranks every
 		//    hidden fact: it shows only on the turn that missed, and says what to
 		//    do about the cost (an idle gap or a model switch).
@@ -682,6 +689,91 @@ function formatRemaining(milliseconds: number): string {
 	return `${Math.floor(milliseconds / 60_000)}m`;
 }
 
+// ── Cache expiry ────────────────────────────────────────────────────────────
+// When the prompt cache is really gone: the latest of three times. The last
+// touch plus the model's cache lifetime. Pi's own idle-warming horizon, when Pi
+// will refresh this context. And an armed pi-keep-cache-warm deadline, when
+// that extension runs in this Pi process. Pi's warming policy comes from pi-ai,
+// which exports it since Pi 1.5.1. Without it, or without idle warming (the
+// default since Pi 1.5.1), the time is last touch plus lifetime.
+
+/** Pi's idle cache-warming policy, exported by pi-ai since Pi 1.5.1. */
+type PiWarmingPolicy = {
+	evaluateCacheWarming(model: Model<Api>, promptTokens: number, phase: "idle"): { action: "warm" | "stop" };
+	getCacheWarmingDelayMs(ttlMs: number): number | undefined;
+	getPromptCacheTtlMs(model: Model<Api>): number | undefined;
+	CACHE_WARMING_MAX_IDLE_AGE_MS: number;
+};
+const piWarming = piAi as unknown as Partial<PiWarmingPolicy>;
+/** Pi's own lifetime lookup where pi-ai exports it, else the same lookup on the model's `promptCache`. */
+const promptCacheTtlMs = piWarming.getPromptCacheTtlMs ?? ((model: Model<Api>): number | undefined => {
+	const seconds = model.promptCache?.[process.env.PI_CACHE_RETENTION === "long" ? "long" : "short"];
+	return seconds === undefined ? undefined : seconds * 1000;
+});
+
+type KeepCacheWarmData = { kind: "arm"; deadline: string } | { kind: "warm"; provider: string; model: string } | { kind: "stop" };
+type CacheExpiryInputs = {
+	model: Model<Api>;
+	/** Pi's effective `cacheWarming` mode. */
+	warmingMode: string;
+	/** When this process loaded pi-keep-cache-warm's tool; null when it is not loaded. Older entries are ignored. */
+	keepCacheWarmSince: number | null;
+};
+
+/** When the session's prompt cache is really gone, or null when Pi knows no cache lifetime for the model or nothing cached yet.
+ * A compaction or branch summary starts over: the next request misses anyway.
+ */
+function cacheExpiresAt(branch: readonly SessionEntry[], { model, warmingMode, keepCacheWarmSince }: CacheExpiryInputs): number | null {
+	const lifetimeMs = promptCacheTtlMs(model);
+	if (lifetimeMs === undefined) return null;
+	const isCurrentModel = (provider: string, id: string) => provider === model.provider && id === model.id;
+	let lastTouch: number | undefined;
+	let lastRequest: { at: number; promptTokens: number } | undefined;
+	let keepWarmDeadline: number | undefined;
+	for (const entry of branch) {
+		if (entry.type === "compaction" || entry.type === "branch_summary") {
+			lastTouch = lastRequest = keepWarmDeadline = undefined;
+		} else if (entry.type === "message" && entry.message.role === "assistant") {
+			const message = entry.message as AssistantMessage;
+			if (message.stopReason === "error" || message.stopReason === "aborted") continue;
+			const { input, cacheRead, cacheWrite } = message.usage;
+			// Pi warms only the last request, and only for the selected model.
+			lastRequest = isCurrentModel(message.provider, message.model) ? { at: message.timestamp, promptTokens: input + cacheRead + cacheWrite } : undefined;
+			if (lastRequest) lastTouch = message.timestamp;
+		} else if (entry.type === "usage" && entry.kind === "cache_warm" && isCurrentModel(entry.provider, entry.model)) {
+			lastTouch = Date.parse(entry.timestamp);
+		} else if (entry.type === "custom" && entry.customType === KEEP_CACHE_WARM_ENTRY && keepCacheWarmSince !== null && Date.parse(entry.timestamp) >= keepCacheWarmSince) {
+			const data = entry.data as KeepCacheWarmData;
+			if (data.kind === "arm") keepWarmDeadline = Date.parse(data.deadline);
+			if (data.kind === "stop") keepWarmDeadline = undefined;
+			if (data.kind === "warm" && isCurrentModel(data.provider, data.model)) lastTouch = Date.parse(entry.timestamp);
+		}
+	}
+	if (lastTouch === undefined) return null;
+	return Math.max(lastTouch + lifetimeMs, keepWarmDeadline ?? 0, piIdleHorizon(model, warmingMode, lifetimeMs, lastRequest) ?? 0);
+}
+
+/** When Pi's own idle warming lets the cache go: the last refresh inside Pi's idle limit after the last request, plus the lifetime.
+ * Null when Pi will not refresh this context: no exported policy, a mode other than "idle", or Pi's cost rule says stop.
+ */
+function piIdleHorizon(model: Model<Api>, warmingMode: string, lifetimeMs: number, lastRequest: { at: number; promptTokens: number } | undefined): number | null {
+	const { evaluateCacheWarming, getCacheWarmingDelayMs, CACHE_WARMING_MAX_IDLE_AGE_MS } = piWarming;
+	if (!lastRequest || warmingMode !== "idle" || !evaluateCacheWarming || !getCacheWarmingDelayMs || CACHE_WARMING_MAX_IDLE_AGE_MS === undefined) return null;
+	const delayMs = getCacheWarmingDelayMs(lifetimeMs);
+	if (delayMs === undefined || evaluateCacheWarming(model, lastRequest.promptTokens, "idle").action !== "warm") return null;
+	return lastRequest.at + Math.floor(CACHE_WARMING_MAX_IDLE_AGE_MS / delayMs) * delayMs + lifetimeMs;
+}
+
+/** Time left, in the shortest clear form, rounded up so a live cache never reads 0m.
+ * @example
+ * [formatTimeLeft(26 * 60_000), formatTimeLeft(30_000), formatTimeLeft(65 * 60_000), formatTimeLeft(120 * 60_000)] // ["26m", "1m", "1h5m", "2h"]
+ */
+function formatTimeLeft(milliseconds: number): string {
+	const minutes = Math.ceil(milliseconds / MINUTE_MS);
+	if (minutes < 60) return `${minutes}m`;
+	return `${Math.floor(minutes / 60)}h${minutes % 60 ? `${minutes % 60}m` : ""}`;
+}
+
 interface SessionStats {
 	totalCost: number;
 	totalReused: number;
@@ -797,11 +889,15 @@ interface FooterSnapshot {
 	context: ReturnType<typeof getContextPercent>;
 	session: DisplaySession;
 	pace: Pace | null;
+	cacheExpiresAt: number | null;
 }
 
 // ── Extension entry point ───────────────────────────────────────────────────
 
 export default function (pi: ExtensionAPI) {
+	const loadedAt = Date.now();
+	// Redraws the footer once a minute, so the cache's time left stays live without session events.
+	let minuteTimer: ReturnType<typeof setInterval> | undefined;
 	let currentCtx: any = null;
 	let tuiRef: any = null;
 	let gitBranch: string | null = null;
@@ -850,6 +946,13 @@ export default function (pi: ExtensionAPI) {
 			context: getContextPercent(currentCtx, stats.lastContextTokens, usage),
 			session: getDisplaySession(currentCtx, currentCtx.cwd || ".", pi),
 			pace: readPace(model, Date.now()),
+			// Read Pi's settings and tools only for a model with a known cache lifetime.
+			cacheExpiresAt: model && promptCacheTtlMs(model) !== undefined ? cacheExpiresAt(branch, {
+				model,
+				// Pi's own default for the setting, which changed to "idle" in Pi 1.5.1.
+				warmingMode: SettingsManager.inMemory(pi.getSettings()).getCacheWarmingMode(),
+				keepCacheWarmSince: pi.getAllTools().some((tool) => tool.name === KEEP_CACHE_WARM_TOOL) ? loadedAt : null,
+			}) : null,
 		};
 		return snapshot;
 	}
@@ -896,7 +999,7 @@ export default function (pi: ExtensionAPI) {
 
 	function renderBelow(width: number, theme: any): string[] {
 		if (!currentCtx) return [];
-		const { stats, context: { pct, window, tokens }, pace } = getSnapshot();
+		const { stats, context: { pct, window, tokens }, pace, cacheExpiresAt: expiresAt } = getSnapshot();
 		const paint = makePainter(theme);
 		const label = (text: string) => theme.fg("dim", `${text} `);
 		const pill = (text: string) => theme.bg("selectedBg", paint.token(PLACE_TOKEN, theme.bold(text)));
@@ -964,6 +1067,14 @@ export default function (pi: ExtensionAPI) {
 				full: paint.ramp(CACHE_STOPS, sessionHit ?? 0, formatTokens(stats.totalReused)) +
 					theme.fg("dim", ` reused / ${formatTokens(stats.totalFresh)} new`),
 			},
+			// Once the time has passed the fact hides: there is nothing left to hurry back for,
+			// and the next request's miss shows what it cost.
+			expiry: expiresAt !== null && expiresAt > Date.now()
+				? {
+					full: `${label("warm for")}${theme.fg("muted", formatTimeLeft(expiresAt - Date.now()))}`,
+					short: theme.fg("muted", formatTimeLeft(expiresAt - Date.now())),
+				}
+				: undefined,
 			pace: pace ? paceForms(pace) : undefined,
 		};
 		return fitFacts(footerFacts, FOOTER_LADDER, width, theme);
@@ -1016,6 +1127,9 @@ export default function (pi: ExtensionAPI) {
 		snapshot = undefined;
 		skillsDirty = true;
 		thinkingLevel = pi.getThinkingLevel() ?? "off";
+		clearInterval(minuteTimer);
+		minuteTimer = setInterval(requestRender, MINUTE_MS);
+		minuteTimer.unref();
 		await refreshGit();
 
 		ctx.ui.setFooter((tui: any, theme: any, footerData: any) => {
@@ -1047,6 +1161,8 @@ export default function (pi: ExtensionAPI) {
 	});
 
 	pi.on("session_shutdown", async () => {
+		clearInterval(minuteTimer);
+		minuteTimer = undefined;
 		currentCtx = null;
 		tuiRef = null;
 		gitBranch = null;
