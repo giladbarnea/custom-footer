@@ -125,16 +125,16 @@ const piOr = (withPolicy, without) => (piHorizon ? withPolicy : without);
 
 // Last touch + lifetime: streaming mode never warms an idle cache. The full line, at every width of the ladder.
 show("streaming", { settings: { cacheWarming: "streaming" }, branch: [turn(start, 100_000)], now: start + minute });
-deepEqual(footerAt(200), [`  workspace/  · context ▅ 50%  100k / 200k tokens · $0.50  $0.50/turn · cache 100.0% session · latest 100.0% · warm for 4m · 100k reused / 0 new`],
+deepEqual(footerAt(200), [`  workspace/  · context ▅50%  100k / 200k tokens · $0.50  $0.50/turn · cache 100% session · hit 100% · warm for 4m · 100k reused / 0 new`],
 	"Without idle warming, the cache must stay warm one lifetime after the last request");
-// The label goes with the other labels, the space before "pm" with the shorter readings,
-// and the whole fact hides just before the cost per turn.
-deepEqual(footerAt(120), ["  workspace/  · ▅ 50%  100k / 200k · $0.50  $0.50/turn · 100.0% session · latest 100.0% · 4m · 100k reused / 0 new"], "First the label goes with the other labels: the time left alone");
-deepEqual(footerAt(100), [" workspace/ ▅ 50% 100k / 200k $1 $0.50/turn 100.0% session latest 100% 4m 100k reused / 0 new"], "The time left keeps its short form through the shorter readings and whitespace");
-deepEqual(footerAt(60), [" workspace/ ▅ 50% 100k / 200k $1 $0.50/turn latest 100% 4m"], "The time left outlasts the reused/new split and the session hit rate");
-deepEqual(footerAt(50), [" workspace/ ▅ 50% $1 $0.50/turn latest 100% 4m"], "The time left outlasts the token counts");
-deepEqual(footerAt(46), [" workspace/ ▅ 50% $1 $0.50/turn latest 100%"], "The time left hides before the cost per turn");
-deepEqual(footerAt(40), [" workspace/ ▅ 50% $1 latest 100%"], "The cost per turn hides after it");
+// The label goes with the other labels, and the whole fact hides just before the cost per turn.
+deepEqual(footerAt(112), ["  workspace/  · ▅50%  100k / 200k · $0.50  $0.50/turn · 100% session · hit 100% · 4m · 100k reused / 0 new"], "First the label goes with the other labels: the time left alone");
+deepEqual(footerAt(90), [" workspace/ ▅50% 100k / 200k $1 $0.50/turn 100% session hit 4m 100k reused / 0 new"], "The time left keeps its short form through the shorter readings and whitespace");
+deepEqual(footerAt(60), [" workspace/ ▅50% 100k / 200k $1 $0.50/turn 100% session 4m"], "The time left outlasts the reused/new split and the last message's hit");
+deepEqual(footerAt(50), [" workspace/ ▅50% $1 $0.50/turn 100% session 4m"], "The time left outlasts the token counts");
+deepEqual(footerAt(40), [" workspace/ ▅50% $1 $0.50/turn 4m"], "The time left outlasts the session hit rate");
+deepEqual(footerAt(32), [" workspace/ ▅50% $1 $0.50/turn"], "The time left hides before the cost per turn");
+deepEqual(footerAt(28), [" workspace/ ▅50% $1"], "The cost per turn hides after it");
 
 // Pi's idle horizon: Pi refreshes every 4.5 minutes within 30 idle minutes (6 refreshes, the last at 27m), then the lifetime: 32m.
 show("idle above", { settings: {}, branch: [turn(start, warmFrom)], now: start + minute });

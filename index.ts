@@ -27,8 +27,9 @@
  *
  * Known differences from Pi's cache-miss notice, reviewed November 11, 2026,
  * against Pi 1.4.0 and 1.5.2:
- * - The footer shows any miss above 1,024 tokens. Pi's notice hides a miss
- *   under 20k tokens that also costs under $0.10.
+ * - The footer shows a miss above 1,024 tokens when at most 90% of the
+ *   prompt was read from the cache. Pi's notice hides a miss under 20k tokens
+ *   that also costs under $0.10.
  * - Errored and aborted turns are skipped, as elsewhere in the footer. Pi's
  *   scan includes them.
  * - The footer scans the current branch. Pi scans every session entry.
@@ -64,6 +65,8 @@ const BRANCH_GLYPH = "";
 const CONTEXT_GAUGE_SYMBOLS = ["▁", "▂", "▃", "▄", "▅", "▆", "▇", "█"];
 const CONTEXT_GAUGE_STEP_COUNT = CONTEXT_GAUGE_SYMBOLS.length;
 const CACHE_MISS_NOISE_FLOOR_TOKENS = 1_024;
+// The last message counts as a cache hit when more than this share of its prompt was read from the cache.
+const CACHE_HIT_ABOVE_PERCENT = 90;
 // Pi's prompt-cache TTL: a miss after a longer idle gap names the gap as its cause.
 const CACHE_TTL_MS = 5 * 60 * 1000;
 // Match Theme.fg, which resets the foreground only. A full reset would punch a
@@ -183,28 +186,38 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		//    "resets in": the bar draws what the two rates say. Then the labels.
 		["pace", "short"],
 		["tokens", "short"], ["context", "bare"], ["cacheSession", "bare"], ["expiry", "short"],
-		// 2. Shorten the readings: the latest cache figure, then the cost, rounded twice.
+		// 2. Shorten the readings: the last message's cache share (for a
+		//    detected miss, its re-billed tokens), then the cost, rounded twice.
 		["latest", "short"], ["cost", "short"], ["cost", "bare"],
 		// 3. Remove whitespace: the padding inside the cwd pill, then the separators.
 		["cwd", "short"], ["spacing", "bare"],
 		// 4. Drop the branch icon.
 		["branch", "bare"],
-		// 5. Hide whole facts. First a stale quota reading's age: it outlasts the
-		//    bar, the labels and the whitespace, so a laptop still sees that the
-		//    rates are old, and it goes before every other part of the pace left.
-		//    Then the burn rate and the reset time: the sign keeps the verdict,
-		//    and the target is the number to act on. The word
+		// 5. Hide whole facts. First the "sub" mark: that a model runs on your
+		//    subscription is rarely news, so it is the least important fact, but
+		//    it is still data and outlasts all the formatting above. Then a stale
+		//    quota reading's age: it outlasts the bar, the labels and the
+		//    whitespace, so a laptop still sees that the rates are old, and it
+		//    goes before every other part of the pace left. Then the burn rate
+		//    and the reset time: the sign keeps the verdict, and the target is
+		//    the number to act on. The last message's "hit" or "miss" hides
+		//    before the session hit rate: the session rate is the cost signal,
+		//    and the last message only hints at it. The session rate also
+		//    outlasts the token counts, which the context gauge already sums
+		//    up, so a phone keeps one cache fact. The word
 		//    "target" outlasts the cache and token facts, because it names that
 		//    number once the burn rate is gone. The time left on the cache
 		//    outlasts it: it says whether to hurry back before a cold restart.
 		//    The cost per turn goes last of them, because seeing what each turn
 		//    costs is half of what the footer is for. The target rate hides only
 		//    at the very end, in step 7.
+		["cost", "least"],
 		["pace", "brief"], ["pace", "bare"],
-		["reuse", "hidden"], ["cacheSession", "hidden"], ["tokens", "hidden"], ["pace", "least"], ["expiry", "hidden"], ["perTurn", "hidden"],
-		// 6. Drop the cause of a cache miss, keeping its cost. It outranks every
-		//    hidden fact: it shows only on the turn that missed, and says what to
-		//    do about the cost (an idle gap or a model switch).
+		["reuse", "hidden"], ["latest", "brief"], ["tokens", "hidden"], ["cacheSession", "hidden"], ["pace", "least"], ["expiry", "hidden"], ["perTurn", "hidden"],
+		// 6. Drop the cause of a detected cache miss, keeping its cost.
+		//    Unlike a plain "hit" or "miss", it outranks every hidden fact: it
+		//    shows only on the turn that missed, and says what to do about the
+		//    cost (an idle gap or a model switch).
 		["latest", "bare"],
 		// 7. Last, hide the target rate. Because the footer takes the fullest
 		//    state with the fewest lines, this fires only where the target alone
@@ -337,8 +350,14 @@ function formatTokens(n: number): string {
 	return String(n);
 }
 
-function formatCost(value: number): string {
-	return value < 0.1 ? value.toFixed(3) : value.toFixed(2);
+/** A number with as many decimal places as its size earns: two below 10, one below 100, none from 100, and never more than maxPlaces.
+ * @example
+ * [formatDecimal(0.099), formatDecimal(9.996), formatDecimal(12.34), formatDecimal(99.96), formatDecimal(123.4), formatDecimal(5.25, 1)]
+ * // ["0.10", "10.0", "12.3", "100", "123", "5.3"]
+ */
+function formatDecimal(value: number, maxPlaces = 2): string {
+	const places = [2, 1].find((candidate) => candidate <= maxPlaces && Number(value.toFixed(candidate)) < 10 ** (3 - candidate)) ?? 0;
+	return value.toFixed(places);
 }
 
 function currentDirectoryName(cwd: string): string {
@@ -563,20 +582,20 @@ function detectCacheMiss(previous: PreviousRequest | undefined, message: Assista
 	};
 }
 
-/** The latest miss in its three forms. Ranked: what it cost, then why it
+/** The last message's miss in its three forms. Ranked: what it cost, then why it
  * happened, then how many tokens. Without a cost, the tokens take its place.
  * @example
  * cacheMissForms({ missedTokens: 199_000, missedCost: 0.38, idleMs: 360_000, modelChanged: false })
- * // { full: "latest miss after 6m idle: 199k re-billed $0.38", short: "miss 6m idle $0.38", bare: "miss $0.38" }
+ * // { full: "miss after 6m idle: 199k re-billed $0.38", short: "miss 6m idle $0.38", bare: "miss $0.38" }
  */
 function cacheMissForms(miss: CacheMiss): Record<"full" | "short" | "bare", string> {
 	// Pi's notice shows a cost from one cent, rounded to cents, and an idle gap from the TTL, in whole minutes.
-	const cost = miss.missedCost >= 0.01 ? `$${miss.missedCost.toFixed(2)}` : null;
+	const cost = miss.missedCost >= 0.01 ? `$${formatDecimal(miss.missedCost)}` : null;
 	const cause = miss.modelChanged ? "model switch" : miss.idleMs >= CACHE_TTL_MS ? `${Math.round(miss.idleMs / 60_000)}m idle` : null;
 	const tokens = formatTokens(miss.missedTokens);
 	const words = (...parts: (string | null)[]) => parts.filter(Boolean).join(" ");
 	return {
-		full: words("latest miss", cause && `after ${cause}:`, `${tokens} re-billed`, cost),
+		full: words("miss", cause && `after ${cause}:`, `${tokens} re-billed`, cost),
 		short: words("miss", cause, cost ?? tokens),
 		bare: words("miss", cost ?? tokens),
 	};
@@ -1007,27 +1026,31 @@ export default function (pi: ExtensionAPI) {
 		// A dirty worktree is a property of the place, not a cost, so it stays in
 		// the place family and leaves `warning` meaning spend alone.
 		const dirty = gitDirty ? paint.token(PLACE_TOKEN, "*") : "";
-		const gauge = paint.ramp(CONTEXT_STOPS, pct, `${ctxGauge(pct)} ${Math.round(pct)}%`);
+		const gauge = paint.ramp(CONTEXT_STOPS, pct, `${ctxGauge(pct)}${Math.round(pct)}%`);
 		// Colour the figure that moves and leave its reference quiet, so the eye
 		// lands on the reading rather than on the window size beside it.
 		const usedTokens = paint.ramp(CONTEXT_STOPS, pct, formatTokens(tokens));
 		const usingSubscription = currentCtx.model
 			? currentCtx.modelRegistry?.isUsingOAuth?.(currentCtx.model)
 			: false;
-		const cost = (amount: string) => paint.token(SPEND_TOKEN, `$${amount}`) + (usingSubscription ? theme.fg("muted", " sub") : "");
+		const cost = (maxPlaces: number) => paint.token(SPEND_TOKEN, `$${formatDecimal(stats.totalCost, maxPlaces)}`);
+		const sub = usingSubscription ? theme.fg("muted", " sub") : "";
 		// A hit rate is a measurement, so it rides the ramp. The old cliff at 80%
 		// made 79% and 20% look identical and threw the reading away.
 		const sessionHit = stats.sessionCacheHitRate;
 		const sessionHitText = sessionHit != null
-			? paint.ramp(CACHE_STOPS, sessionHit, `${sessionHit.toFixed(1)}% session`)
+			? paint.ramp(CACHE_STOPS, sessionHit, `${formatDecimal(sessionHit, 1)}% session`)
 			: theme.fg("dim", "no cache yet");
+		// The last message is a hit or a miss by its cache share alone. A miss that pi's accounting
+		// also detects shows its cost and cause instead of the share.
 		const latestHit = stats.latestCacheHitRate;
-		const missForms = stats.latestCacheMiss && cacheMissForms(stats.latestCacheMiss);
+		const isHit = latestHit != null && latestHit > CACHE_HIT_ABOVE_PERCENT;
+		const missForms = !isHit && stats.latestCacheMiss ? cacheMissForms(stats.latestCacheMiss) : null;
 		const paceForms = (reading: Pace): FactForms => {
 			const dim = (text: string) => theme.fg("dim", text);
 			const burnHeat = (text: string) => paint.ramp(PACE_STOPS, pacePosition(reading.burn, false), text);
-			const burn = burnHeat(`${reading.burn.toFixed(2)}×`);
-			const target = paint.ramp(PACE_STOPS, pacePosition(reading.target, true), `${reading.target.toFixed(2)}×`);
+			const burn = burnHeat(`${formatDecimal(reading.burn)}×`);
+			const target = paint.ramp(PACE_STOPS, pacePosition(reading.target, true), `${formatDecimal(reading.target)}×`);
 			// The sign carries the verdict, and colour repeats it.
 			const sign = reading.burn > reading.target ? theme.fg("error", ">") : dim("≤");
 			const resets = formatRemaining(reading.resetsInMs);
@@ -1051,16 +1074,18 @@ export default function (pi: ExtensionAPI) {
 				full: `${usedTokens}${theme.fg("dim", ` / ${formatTokens(window)} tokens`)}`,
 				short: `${usedTokens}${theme.fg("dim", ` / ${formatTokens(window)}`)}`,
 			},
-			cost: { full: cost(formatCost(stats.totalCost)), short: cost(stats.totalCost.toFixed(1)), bare: cost(stats.totalCost.toFixed(0)) },
-			perTurn: { full: paint.quiet(SPEND_TOKEN, `$${formatCost(stats.averageCostPerTurn)}/turn`) },
+			cost: { full: `${cost(2)}${sub}`, short: `${cost(1)}${sub}`, bare: `${cost(0)}${sub}`, least: cost(0) },
+			perTurn: { full: paint.quiet(SPEND_TOKEN, `$${formatDecimal(stats.averageCostPerTurn)}/turn`) },
 			cacheSession: { full: `${label("cache")}${sessionHitText}`, bare: sessionHitText },
+			// "brief" is the step where a plain hit or miss hides; a detected miss stays to the end.
 			latest: missForms
-				? { full: theme.fg("error", missForms.full), short: theme.fg("error", missForms.short), bare: theme.fg("error", missForms.bare) }
+				? { full: theme.fg("error", missForms.full), short: theme.fg("error", missForms.short), brief: theme.fg("error", missForms.short), bare: theme.fg("error", missForms.bare) }
 				: latestHit != null
 					? {
-						full: paint.ramp(CACHE_STOPS, latestHit, `latest ${latestHit.toFixed(1)}%`),
-						short: paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`),
-						bare: paint.ramp(CACHE_STOPS, latestHit, `latest ${Math.round(latestHit)}%`),
+						full: paint.ramp(CACHE_STOPS, latestHit, `${isHit ? "hit" : "miss"} ${Math.round(latestHit)}%`),
+						short: paint.ramp(CACHE_STOPS, latestHit, isHit ? "hit" : "miss"),
+						brief: "",
+						bare: "",
 					}
 					: undefined,
 			reuse: {

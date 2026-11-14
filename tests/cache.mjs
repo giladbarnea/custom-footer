@@ -80,7 +80,7 @@ assert.match(output, /150k \/ 200k tokens/);
 assert.match(output, /\$3\.00/);
 assert.match(output, /\$1\.50\/turn/);
 assert.match(output, /75\.0% session/);
-assert.match(output, /latest miss 30k re-billed/);
+assert.match(output, /miss 30k re-billed/);
 assert.match(output, /150k reused \/ 50k new/);
 assert.equal(calls.history, 1, "Message appends must not rescan skills before turn_end");
 
@@ -106,7 +106,7 @@ assert.match(output, /\$6\.50/);
 assert.match(output, /\$2\.00\/turn/, "A warm is not an assistant turn");
 assert.match(output, /300k reused \/ 100k new/);
 assert.match(output, /75\.0% session/);
-assert.match(output, /latest miss 50k re-billed/);
+assert.match(output, /miss 50k re-billed/);
 
 // A warm after expiry rebuilds the cache: its input and cacheWrite count as new tokens.
 // Worked example: new 100k + 2k + 98k = 200k, reused stays 300k, session 300k / 500k = 60.0%.
@@ -159,7 +159,7 @@ output = render();
 assert.doesNotMatch(output, /tdd/);
 assert.match(output, /50k \/ 400k tokens/);
 assert.match(output, /0\.0% session/);
-assert.doesNotMatch(output, /latest miss/);
+assert.doesNotMatch(output, /miss/);
 
 tokens = 40_000;
 branch = [];
@@ -167,7 +167,7 @@ leafId = "earlier-branch";
 await emit("session_tree");
 output = render();
 assert.match(output, /10%/);
-assert.match(output, /\$0\.000/);
+assert.match(output, /\$0\.00 /);
 
 // An in-memory fork can keep both the manager object and inherited leaf ID.
 sessionId = "fork-session";
