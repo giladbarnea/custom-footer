@@ -12,6 +12,7 @@ const customFooter = loaded.default ?? loaded;
 const handlers = new Map();
 const executedCommands = [];
 let branchName = "main";
+let gitWorktreeStatus = " M index.ts\n";
 let headerFactory;
 let footerFactory;
 const assistant = (input, cacheRead, totalCost) => ({
@@ -42,7 +43,7 @@ customFooter({
 	events: { on() {} },
 	exec: async (command, args) => {
 		executedCommands.push(command);
-		return { stdout: args[0] === "branch" ? `${branchName}\n` : " M index.ts\n" };
+		return { stdout: args[0] === "branch" ? `${branchName}\n` : gitWorktreeStatus };
 	},
 	getThinkingLevel: () => "high",
 	getSessionName: () => "workspace Original",
@@ -282,68 +283,68 @@ const fullFacts = " \uf126 main* ·  workspace/  · context ▇75%  150k / 200k 
 showPace("under budget", opus, { claude: { usages: [pool("CLAUDE", 80), pool("FABLE", 27)] }, openrouter: { budget: {} } });
 deepEqual(
 	footerAt(230),
-	[`${fullFacts} · burn ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h`],
-	"A wide footer must show the pace in full: the bar, burn ≤ target, and the reset time",
+	[`${fullFacts} · pace ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h`],
+	"A wide footer must show the pace in full: the bar, pace ≤ target, and the reset time",
 );
 deepEqual(
 	footerAt(199),
-	[`${fullFacts} · burn 0.86× ≤ target 2.69× · 12h`],
+	[`${fullFacts} · pace 0.86× ≤ target 2.69× · 12h`],
 	"The first thing to go must be the pace bar and the words 'resets in', before any label",
 );
 deepEqual(
 	footerAt(127),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new burn 0.86× ≤ target 2.69× · 12h"],
-	"The burn rate and the reset time must outlast the labels, the rounding, the whitespace and the branch icon",
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace 0.86× ≤ target 2.69× · 12h"],
+	"The pace reading and the reset time must outlast the labels, the rounding, the whitespace and the branch icon",
 );
 deepEqual(
 	footerAt(120),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new ≤ target 2.69×"],
-	"The burn rate and the reset time must be the first whole facts to hide, leaving the target rate",
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace ≤ target (2.69×)"],
+	"The pace reading and the reset time must be the first whole facts to hide, leaving the target rate",
 );
 deepEqual(
 	footerAt(100),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k ≤ target 2.69×"],
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace ≤ target (2.69×)"],
 	"The reused/new split must hide before the word 'target' goes",
 );
 deepEqual(
 	footerAt(70),
-	[" main* workspace/ ▇75% $3 $1.50/turn miss 30k ≤ target 2.69×"],
+	[" main* workspace/ ▇75% $3 $1.50/turn miss 30k pace ≤ target (2.69×)"],
 	"The word 'target' must outlast the session hit rate and the token counts",
 );
 deepEqual(
-	footerAt(56),
-	[" main* workspace/ ▇75% $3 $1.50/turn miss 30k ≤ 2.69×"],
+	footerAt(61),
+	[" main* workspace/ ▇75% $3 $1.50/turn miss 30k pace ≤ 2.69×"],
 	"The word 'target' must go before the cost per turn hides",
 );
 deepEqual(
 	footerAt(50),
-	[" main* workspace/ ▇75% $3 miss 30k ≤ 2.69×"],
+	[" main* workspace/ ▇75% $3 miss 30k pace ≤ 2.69×"],
 	"The target rate must stay when every other fact that can hide has hidden",
 );
 // The phone band. Hiding the target is the ladder's last step, so it fires only
-// where the target alone would add a line: from 42 down to 35 columns with these
+// where the target alone would add a line: from 47 down to 35 columns with these
 // short names. At 34 and below the footer needs a second line anyway, and the
 // target rides on it.
-deepEqual(footerAt(46), [" main* workspace/ ▇75% $3 miss 30k ≤ 2.69×"], "At 46 columns the target rate must still fit on the one line");
-deepEqual(footerAt(43), [" main* workspace/ ▇75% $3 miss 30k ≤ 2.69×"], "At 43 columns, the narrowest that holds it, the target rate must still show");
-deepEqual(footerAt(42), [" main* workspace/ ▇75% $3 miss 30k"], "At 42 columns the target rate must hide rather than add a line");
+deepEqual(footerAt(50), [" main* workspace/ ▇75% $3 miss 30k pace ≤ 2.69×"], "At 50 columns the target rate must still fit on the one line");
+deepEqual(footerAt(48), [" main* workspace/ ▇75% $3 miss 30k pace ≤ 2.69×"], "At 48 columns, the narrowest that holds it, the target rate must still show");
+deepEqual(footerAt(47), [" main* workspace/ ▇75% $3 miss 30k"], "At 47 columns the target rate must hide rather than add a line");
 deepEqual(footerAt(40), [" main* workspace/ ▇75% $3 miss 30k"], "At 40 columns the footer must keep its one line without the target rate");
 deepEqual(footerAt(38), [" main* workspace/ ▇75% $3 miss 30k"], "At 38 columns the footer must keep its one line without the target rate");
 deepEqual(
 	footerAt(30),
-	[" main* workspace/ ▇75% $3", " miss 30k ≤ 2.69×"],
+	[" main* workspace/ ▇75% $3", " miss 30k pace ≤ 2.69×"],
 	"Where the footer needs a second line anyway, the target rate must ride on it",
 );
 
 // The same band moves with name lengths: with a long branch and directory it is
-// 60 down to 53 columns, just under a 61-column phone.
+// 65 down to 53 columns, including a 61-column phone.
 branchName = "feature/quota-pace";
 context.cwd = "/home/me/custom-footer";
 leafId = "long names";
 await handlers.get("turn_end")({ type: "turn_end" }, context);
-deepEqual(footerAt(64), [" feature/quota-pace* custom-footer/ ▇75% $3 miss 30k ≤ 2.69×"], "With long names, 64 columns must still hold the target rate");
-deepEqual(footerAt(61), [" feature/quota-pace* custom-footer/ ▇75% $3 miss 30k ≤ 2.69×"], "On a 61-column phone with long names, the narrowest that holds it, the target rate must still show");
-deepEqual(footerAt(60), [" feature/quota-pace* custom-footer/ ▇75% $3 miss 30k"], "With long names, at 60 columns the target rate must hide rather than add a line");
+deepEqual(footerAt(68), [" feature/quota-pace* custom-footer/ ▇75% $3 miss 30k pace ≤ 2.69×"], "With long names, 68 columns must still hold the target rate");
+deepEqual(footerAt(66), [" feature/quota-pace* custom-footer/ ▇75% $3 miss 30k pace ≤ 2.69×"], "With long names, 66 columns, the narrowest that holds it, must still show the target rate");
+deepEqual(footerAt(61), [" feature/quota-pace* custom-footer/ ▇75% $3 miss 30k"], "On a 61-column phone with long names, the target rate must hide rather than add a line");
 deepEqual(footerAt(56), [" feature/quota-pace* custom-footer/ ▇75% $3 miss 30k"], "With long names, 56 columns must keep one line without the target rate");
 branchName = "main";
 context.cwd = "/workspace";
@@ -357,39 +358,39 @@ await handlers.get("turn_end")({ type: "turn_end" }, context);
 // goes before any other part of the pace left.
 const staleCache = (minutes) => ({ claude: { written_at: minutesAgo(minutes), usages: [pool("CLAUDE", 80)] } });
 showPace("29.5 minutes old", opus, staleCache(29.5));
-deepEqual(footerAt(240), [`${fullFacts} · burn ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h`], "A reading just under 30 minutes old must show no age");
+deepEqual(footerAt(240), [`${fullFacts} · pace ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h`], "A reading just under 30 minutes old must show no age");
 showPace("30.5 minutes old", opus, staleCache(30.5));
-deepEqual(footerAt(240), [`${fullFacts} · burn ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h · 30m old`], "A reading just over 30 minutes old must show its age");
+deepEqual(footerAt(240), [`${fullFacts} · pace ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h · 30m old`], "A reading just over 30 minutes old must show its age");
 showPace("2.5 hours old", opus, staleCache(150));
-deepEqual(footerAt(240), [`${fullFacts} · burn ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h · 2h old`], "A reading hours old must show its age in whole hours, after the reset time");
+deepEqual(footerAt(240), [`${fullFacts} · pace ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h · 2h old`], "A reading hours old must show its age in whole hours, after the reset time");
 deepEqual(
 	footerAt(208),
-	[`${fullFacts} · burn 0.86× ≤ target 2.69× · 12h · 2h old`],
+	[`${fullFacts} · pace 0.86× ≤ target 2.69× · 12h · 2h old`],
 	"The pace bar must go before the age",
 );
 deepEqual(
 	footerAt(160),
-	[" \uf126 main* ·  workspace/  · ▇75%  150k / 200k · $3.00  $1.50/turn · 75.0% session · miss 30k · 150k reused / 50k new · burn 0.86× ≤ target 2.69× · 12h · 2h old"],
+	[" \uf126 main* ·  workspace/  · ▇75%  150k / 200k · $3.00  $1.50/turn · 75.0% session · miss 30k · 150k reused / 50k new · pace 0.86× ≤ target 2.69× · 12h · 2h old"],
 	"A laptop-width footer must keep the age, after the labels have gone",
 );
 deepEqual(
 	footerAt(136),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new burn 0.86× ≤ target 2.69× · 12h · 2h old"],
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace 0.86× ≤ target 2.69× · 12h · 2h old"],
 	"The age must outlast the whitespace and the branch icon",
 );
 deepEqual(
 	footerAt(134),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new burn 0.86× ≤ target 2.69× · 12h"],
-	"The age must go before the burn rate, the reset time and every other part of the pace left",
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace 0.86× ≤ target 2.69× · 12h"],
+	"The age must go before the pace reading, the reset time and every other part of the pace left",
 );
 deepEqual(
 	footerAt(120),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new ≤ target 2.69×"],
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace ≤ target (2.69×)"],
 	"Once the age is gone, the pace narrows as before",
 );
-deepEqual(footerAt(52), [" main* workspace/ ▇75% $3 miss 30k ≤ 2.69×"], "A stale reading's shortest form is the same as a fresh one's");
+deepEqual(footerAt(52), [" main* workspace/ ▇75% $3 miss 30k pace ≤ 2.69×"], "A stale reading's shortest form is the same as a fresh one's");
 showPace("a day old", opus, staleCache(25 * 60));
-deepEqual(footerAt(240), [`${fullFacts} · burn ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h · 1d 1h old`], "A reading a day old must show days and hours");
+deepEqual(footerAt(240), [`${fullFacts} · pace ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h · 1d 1h old`], "A reading a day old must show days and hours");
 showPace("no timestamp", opus, { claude: { written_at: null, usages: [pool("CLAUDE", 80)] } });
 deepEqual(footerAt(230), [fullFacts], "A reading without a timestamp has no known age and must show no pace");
 
@@ -399,17 +400,17 @@ deepEqual(footerAt(230), [fullFacts], "A reading without a timestamp has no know
 showPace("over budget", opus, { claude: { usages: [pool("CLAUDE", 95)] } });
 deepEqual(
 	footerAt(230),
-	[`${fullFacts} · burn ━━━━━━┊━● 1.03× > target 0.67× · resets in 12h`],
+	[`${fullFacts} · pace ━━━━━━┊━● 1.03× > target 0.67× · resets in 12h`],
 	"Over budget, the sign must turn to > and the dot must pass the time marker",
 );
 deepEqual(
 	footerAt(199),
-	[`${fullFacts} · burn 1.03× > target 0.67× · 12h`],
+	[`${fullFacts} · pace 1.03× > target 0.67× · 12h`],
 	"Over budget, the medium form must keep the > sign",
 );
 deepEqual(
 	footerAt(50),
-	[" main* workspace/ ▇75% $3 miss 30k > 0.67×"],
+	[" main* workspace/ ▇75% $3 miss 30k pace > 0.67×"],
 	"Over budget, the shortest form must keep the > sign",
 );
 
@@ -420,13 +421,13 @@ deepEqual(
 showPace("fable", fable, { claude: { usages: [pool("CLAUDE", 95), pool("FABLE", 27)] } });
 deepEqual(
 	footerAt(230),
-	[`${fullFacts} · burn ━━●────┊─ 0.29× ≤ target 1.34× · resets in 12h`],
+	[`${fullFacts} · pace ━━●────┊─ 0.29× ≤ target 1.34× · resets in 12h`],
 	"A Fable session must show Fable's burn against the pick score: its target capped by the shared Claude week",
 );
 showPace("fable capped out", fable, { claude: { usages: [pool("CLAUDE", 99.9), pool("FABLE", 27)] } });
 deepEqual(
 	footerAt(120),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new > target 0.03×"],
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace > target (0.03×)"],
 	"The sign must compare the two rates shown: a nearly spent Claude week puts a slow Fable over its target",
 );
 showPace("fable without claude", fable, { claude: { usages: [pool("FABLE", 27)] } });
@@ -440,7 +441,7 @@ showPace("codex", { provider: "openai-codex", id: "gpt-6-astra" }, {
 });
 deepEqual(
 	footerAt(230),
-	[`${fullFacts} · burn ━━━┊━●─── 1.21× > target 0.80× · resets in 3d 12h`],
+	[`${fullFacts} · pace ━━━┊━●─── 1.21× > target 0.80× · resets in 3d 12h`],
 	"A Codex session must show the Codex week, with days in the reset time",
 );
 
@@ -504,49 +505,77 @@ context.modelRegistry.isUsingOAuth = () => true;
 await showSession("issue 9", [...Array.from({ length: 50 }, (_, index) => paidTurn(index, 2_000, 98_000)), paidTurn(60, 0, 100_000)]);
 deepEqual(
 	footerAt(240),
-	[" \uf126 main* ·  wa/  · context ▂16%  160k / 1.0M tokens · $5.05 sub  $0.10/turn · cache 98.0% session · hit 100% · 5.0M reused / 100k new · burn ━━━┊━●─── 1.19× > target 0.82× · resets in 3d 12h"],
+	[" \uf126 main* ·  wa/  · context ▂16%  160k / 1.0M tokens · $5.05 sub  $0.10/turn · cache 98.0% session · hit 100% · 5.0M reused / 100k new · pace ━━━┊━●─── 1.19× > target 0.82× · resets in 3d 12h"],
 	"A wide footer must show the bar against its value, costs at two places, the subscription mark and the last message as a hit",
 );
 deepEqual(
 	footerAt(152),
-	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit 100% · 5.0M reused / 100k new · burn 1.19× > target 0.82× · 3d 12h"],
+	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit 100% · 5.0M reused / 100k new · pace 1.19× > target 0.82× · 3d 12h"],
 	"The hit must keep its percentage until the labels have gone",
 );
 deepEqual(
 	footerAt(147),
-	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit · 5.0M reused / 100k new · burn 1.19× > target 0.82× · 3d 12h"],
+	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit · 5.0M reused / 100k new · pace 1.19× > target 0.82× · 3d 12h"],
 	"The hit's percentage must be the first part of it to go, before the cost is rounded",
 );
 deepEqual(
 	footerAt(122),
-	[" main* wa/ ▂16% 160k / 1.0M $5 sub $0.10/turn 98.0% session hit 5.0M reused / 100k new burn 1.19× > target 0.82× · 3d 12h"],
+	[" main* wa/ ▂16% 160k / 1.0M $5 sub $0.10/turn 98.0% session hit 5.0M reused / 100k new pace 1.19× > target 0.82× · 3d 12h"],
 	"The subscription mark must outlast all the formatting: the labels, the rounding, the whitespace and the branch icon",
 );
 deepEqual(
 	footerAt(120),
-	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session hit 5.0M reused / 100k new burn 1.19× > target 0.82× · 3d 12h"],
+	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session hit 5.0M reused / 100k new pace 1.19× > target 0.82× · 3d 12h"],
 	"The subscription mark must be the first whole fact to hide, before any part of the pace",
 );
 deepEqual(
 	footerAt(90),
-	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session hit > target 0.82×"],
+	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session hit pace > target (0.82×)"],
 	"The hit must outlast the reused/new split",
 );
 deepEqual(
-	footerAt(72),
-	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session > target 0.82×"],
+	footerAt(78),
+	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session pace > target (0.82×)"],
 	"The last message's hit must hide before the session hit rate and the token counts",
 );
 deepEqual(
 	footerAt(61),
-	[" main* wa/ ▂16% $5 $0.10/turn 98.0% session > target 0.82×"],
-	"At the screenshot's 61 columns, the session hit rate must outlast the token counts, with no subscription mark and no last-message fact",
+	[" main* wa/ ▂16% $5 $0.10/turn pace > target (0.82×)"],
+	"At 61 columns, the longer pace wording hides the session hit rate before the word 'target'",
 );
 deepEqual(
-	footerAt(50),
-	[" main* wa/ ▂16% $5 $0.10/turn > target 0.82×"],
+	footerAt(52),
+	[" main* wa/ ▂16% $5 $0.10/turn pace > target (0.82×)"],
 	"The session hit rate must hide before the word 'target'",
 );
+
+// Run 96 uses the clean branch from the released question. The added label and
+// parentheses move the session hit rate's first visible width from 58 to 65.
+gitWorktreeStatus = "";
+await showSession("pace wording, over budget", branch);
+deepEqual(footerAt(66), [" main wa/ ▂16% $5 $0.10/turn 98.0% session pace > target (0.82×)"], "At 66 columns, the approved collapsed form must keep the session hit rate");
+deepEqual(footerAt(65), [" main wa/ ▂16% $5 $0.10/turn 98.0% session pace > target (0.82×)"], "The session hit rate must show from 65 columns, as the released question says");
+deepEqual(footerAt(64), [" main wa/ ▂16% $5 $0.10/turn pace > target (0.82×)"], "Below 65 columns, the session hit rate must hide before 'target'");
+deepEqual(footerAt(61), [" main wa/ ▂16% $5 $0.10/turn pace > target (0.82×)"], "At 61 columns, pace must name the left side and parentheses must bind the target's value");
+deepEqual(footerAt(51), [" main wa/ ▂16% $5 $0.10/turn pace > target (0.82×)"], "The word 'target' and its parentheses must stay through 51 columns");
+deepEqual(footerAt(50), [" main wa/ ▂16% $5 $0.10/turn pace > 0.82×"], "At 50 columns, the narrowest form keeps 'pace' but drops 'target' and its parentheses");
+deepEqual(footerAt(45), [" main wa/ ▂16% $5 $0.10/turn pace > 0.82×"], "At 45 columns, the approved narrowest form must fit on one line");
+deepEqual(footerAt(31), [" main wa/ ▂16% $5 pace > 0.82×"], "At the narrowest width that holds it, the pace keeps its left-side label");
+deepEqual(footerAt(30), [" main wa/ ▂16% $5"], "The unchanged last rung hides the pace only where it would add a line");
+showPace("pace wording, under budget", opus, { claude: { usages: [pool("CLAUDE", 41, 84.5)] } });
+deepEqual(footerAt(240), ["  main ·  wa/  · context ▂16%  160k / 1.0M tokens · $5.05 sub  $0.10/turn · cache 98.0% session · hit 100% · 5.0M reused / 100k new · pace ━━━●┊──── 0.82× ≤ target 1.17× · resets in 3d 12h"], "The under-budget wide form must also say 'pace', without new parentheses");
+deepEqual(footerAt(66), [" main wa/ ▂16% $5 $0.10/turn 98.0% session pace ≤ target (1.17×)"], "The under-budget collapsed form must keep the ≤ sign and target parentheses");
+deepEqual(footerAt(61), [" main wa/ ▂16% $5 $0.10/turn pace ≤ target (1.17×)"], "The under-budget form has the same hide order");
+deepEqual(footerAt(45), [" main wa/ ▂16% $5 $0.10/turn pace ≤ 1.17×"], "The under-budget narrowest form must keep 'pace'");
+deepEqual(footerAt(31), [" main wa/ ▂16% $5 pace ≤ 1.17×"], "The under-budget form must also fit at 31 columns");
+for (const [scenario, used, signToken, sign, target] of [["over", 59, "error", ">", "0.82×"], ["under", 41, "dim", "≤", "1.17×"]]) {
+	showPace(`pace wording colors, ${scenario}`, opus, { claude: { usages: [pool("CLAUDE", used, 84.5)] } });
+	const rendered = colorFooter.render(61)[0];
+	ok(rendered.includes(`${paint("dim", "pace ")}${paint(signToken, sign)} ${paint("dim", "target ")}${paint("dim", "(")}`), `${scenario}: the new label and parentheses must stay dim, and the sign must keep its color. Got: ${JSON.stringify(rendered)}`);
+	ok(rendered.includes(target), `${scenario}: the colored target must keep its value. Got: ${JSON.stringify(rendered)}`);
+}
+gitWorktreeStatus = " M index.ts\n";
+await showSession("pace wording reset", branch);
 
 // Numbers earn decimal places by size: two below 10, one from 10, none from 100.
 const wide = () => footerAt(240)[0];
@@ -572,7 +601,7 @@ ok(wide().includes(" · hit 90% · "), `Just over 90% read from the cache, the l
 await showSession("new content", [paidTurn(0, 2_000, 8_000), paidTurn(1, 30_000, 10_000)]);
 ok(wide().includes(" · miss 25% · "), `A last message under 90% must be a miss with its share, also when nothing cached was re-billed. Got: ${wide()}`);
 // The session read 18k of its 50k prompt tokens (36.0%), and two turns cost $0.198.
-deepEqual(footerAt(72), [" main* wa/ ▂16% 160k / 1.0M $0 $0.10/turn 36.0% session > target 0.82×"], "A plain miss must hide before the session hit rate, like a hit");
+deepEqual(footerAt(78), [" main* wa/ ▂16% 160k / 1.0M $0 $0.10/turn 36.0% session pace > target (0.82×)"], "A plain miss must hide before the session hit rate, like a hit");
 // A partial miss above 90%: after a 200k prompt, 195k of 210k were read (92.9%) and 5k re-billed.
 await showSession("partial miss", [paidTurn(0, 0, 200_000), paidTurn(1, 15_000, 195_000)]);
 ok(wide().includes(" · hit 93% · "), `Above 90%, the last message must be a hit even when pi's accounting detects a small miss. Got: ${wide()}`);

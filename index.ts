@@ -198,7 +198,7 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		//    it is still data and outlasts all the formatting above. Then a stale
 		//    quota reading's age: it outlasts the bar, the labels and the
 		//    whitespace, so a laptop still sees that the rates are old, and it
-		//    goes before every other part of the pace left. Then the burn rate
+		//    goes before every other part of the pace left. Then the pace reading
 		//    and the reset time: the sign keeps the verdict, and the target is
 		//    the number to act on. The last message's "hit" or "miss" hides
 		//    before the session hit rate: the session rate is the cost signal,
@@ -206,7 +206,7 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		//    outlasts the token counts, which the context gauge already sums
 		//    up, so a phone keeps one cache fact. The word
 		//    "target" outlasts the cache and token facts, because it names that
-		//    number once the burn rate is gone. The time left on the cache
+		//    number once the pace reading is gone. The time left on the cache
 		//    outlasts it: it says whether to hurry back before a cold restart.
 		//    The cost per turn goes last of them, because seeing what each turn
 		//    costs is half of what the footer is for. The target rate hides only
@@ -1057,11 +1057,11 @@ export default function (pi: ExtensionAPI) {
 			// A stale reading keeps showing, with its age until "brief", the form without it.
 			const age = reading.ageMs > PACE_STALE_AFTER_MS ? dim(` · ${formatRemaining(reading.ageMs)} old`) : "";
 			return {
-				full: `${label("burn")}${paceBar(reading.used, reading.elapsed, burnHeat, dim)} ${burn} ${sign} ${label("target")}${target}${dim(` · resets in ${resets}`)}${age}`,
-				short: `${label("burn")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}${age}`,
-				brief: `${label("burn")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}`,
-				bare: `${sign} ${label("target")}${target}`,
-				least: `${sign} ${target}`,
+				full: `${label("pace")}${paceBar(reading.used, reading.elapsed, burnHeat, dim)} ${burn} ${sign} ${label("target")}${target}${dim(` · resets in ${resets}`)}${age}`,
+				short: `${label("pace")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}${age}`,
+				brief: `${label("pace")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}`,
+				bare: `${label("pace")}${sign} ${label("target")}${dim("(")}${target}${dim(")")}`,
+				least: `${label("pace")}${sign} ${target}`,
 			};
 		};
 		const footerFacts: Partial<Record<FooterFact, FactForms>> = {
