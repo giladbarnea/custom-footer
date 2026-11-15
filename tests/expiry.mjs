@@ -125,12 +125,12 @@ const piOr = (withPolicy, without) => (piHorizon ? withPolicy : without);
 
 // Last touch + lifetime: streaming mode never warms an idle cache. The full line, at every width of the ladder.
 show("streaming", { settings: { cacheWarming: "streaming" }, branch: [turn(start, 100_000)], now: start + minute });
-deepEqual(footerAt(200), [`  workspace/  · context ▅50%  100k / 200k tokens · $0.50  $0.50/turn · cache 100% session · hit 100% · warm for 4m · 100k reused / 0 new`],
+deepEqual(footerAt(200), [`  workspace/  · context ▅50%  100k / 200k tokens · $0.50  $0.50/turn · cache 100% session (100k reused) · hit 100% · warm for 4m`],
 	"Without idle warming, the cache must stay warm one lifetime after the last request");
 // The label goes with the other labels, and the whole fact hides just before the cost per turn.
-deepEqual(footerAt(112), ["  workspace/  · ▅50%  100k / 200k · $0.50  $0.50/turn · 100% session · hit 100% · 4m · 100k reused / 0 new"], "First the label goes with the other labels: the time left alone");
-deepEqual(footerAt(90), [" workspace/ ▅50% 100k / 200k $1 $0.50/turn 100% session hit 4m 100k reused / 0 new"], "The time left keeps its short form through the shorter readings and whitespace");
-deepEqual(footerAt(60), [" workspace/ ▅50% 100k / 200k $1 $0.50/turn 100% session 4m"], "The time left outlasts the reused/new split and the last message's hit");
+deepEqual(footerAt(85), ["  workspace/  · ▅50%  100k / 200k · $0.50  $0.50/turn · 100% session · hit 100% · 4m"], "First the label goes with the other labels: the time left alone");
+deepEqual(footerAt(63), [" workspace/ ▅50% 100k / 200k $1 $0.50/turn 100% session hit 4m"], "The time left keeps its short form through the shorter readings and whitespace");
+deepEqual(footerAt(60), [" workspace/ ▅50% 100k / 200k $1 $0.50/turn 100% session 4m"], "The time left outlasts the reused-token suffix and the last message's hit");
 deepEqual(footerAt(50), [" workspace/ ▅50% $1 $0.50/turn 100% session 4m"], "The time left outlasts the token counts");
 deepEqual(footerAt(40), [" workspace/ ▅50% $1 $0.50/turn 4m"], "The time left outlasts the session hit rate");
 deepEqual(footerAt(32), [" workspace/ ▅50% $1 $0.50/turn"], "The time left hides before the cost per turn");

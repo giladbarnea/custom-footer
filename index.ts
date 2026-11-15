@@ -154,7 +154,7 @@ type Ladder<Key extends string> = {
 	steps: readonly (readonly [Key | "spacing", Form])[];
 };
 type HeaderFact = "model" | "thinking" | "sessionName" | "sessionId";
-type FooterFact = "branch" | "cwd" | "context" | "tokens" | "cost" | "perTurn" | "cacheSession" | "latest" | "expiry" | "reuse" | "pace";
+type FooterFact = "branch" | "cwd" | "context" | "tokens" | "cost" | "perTurn" | "cacheSession" | "latest" | "expiry" | "pace";
 
 const SPACING = {
 	full: { separator: WIDE_SEPARATOR, joiner: "  " },
@@ -178,22 +178,24 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 	rows: [
 		[["branch"], ["cwd"]],
 		[["context", "tokens"], ["cost", "perTurn"]],
-		[["cacheSession"], ["latest"], ["expiry"], ["reuse"]],
+		[["cacheSession"], ["latest"], ["expiry"]],
 		[["pace"]],
 	],
 	steps: [
-		// 1. Drop what the values already imply. First the pace bar and the words
+		// 1. Drop the optional reused-token suffix before any other detail or fact.
+		["cacheSession", "short"],
+		// 2. Drop what the values already imply. First the pace bar and the words
 		//    "resets in": the bar draws what the two rates say. Then the labels.
 		["pace", "short"],
 		["tokens", "short"], ["context", "bare"], ["cacheSession", "bare"], ["expiry", "short"],
-		// 2. Shorten the readings: the last message's cache share (for a
+		// 3. Shorten the readings: the last message's cache share (for a
 		//    detected miss, its re-billed tokens), then the cost, rounded twice.
 		["latest", "short"], ["cost", "short"], ["cost", "bare"],
-		// 3. Remove whitespace: the padding inside the cwd pill, then the separators.
+		// 4. Remove whitespace: the padding inside the cwd pill, then the separators.
 		["cwd", "short"], ["spacing", "bare"],
-		// 4. Drop the branch icon.
+		// 5. Drop the branch icon.
 		["branch", "bare"],
-		// 5. Hide whole facts. First the "sub" mark: that a model runs on your
+		// 6. Hide whole facts. First the "sub" mark: that a model runs on your
 		//    subscription is rarely news, so it is the least important fact, but
 		//    it is still data and outlasts all the formatting above. Then a stale
 		//    quota reading's age: it outlasts the bar, the labels and the
@@ -210,16 +212,16 @@ const FOOTER_LADDER: Ladder<FooterFact> = {
 		//    outlasts it: it says whether to hurry back before a cold restart.
 		//    The cost per turn goes last of them, because seeing what each turn
 		//    costs is half of what the footer is for. The target rate hides only
-		//    at the very end, in step 7.
+		//    at the very end, in step 8.
 		["cost", "least"],
 		["pace", "brief"], ["pace", "bare"],
-		["reuse", "hidden"], ["latest", "brief"], ["tokens", "hidden"], ["cacheSession", "hidden"], ["pace", "least"], ["expiry", "hidden"], ["perTurn", "hidden"],
-		// 6. Drop the cause of a detected cache miss, keeping its cost.
+		["latest", "brief"], ["tokens", "hidden"], ["cacheSession", "hidden"], ["pace", "least"], ["expiry", "hidden"], ["perTurn", "hidden"],
+		// 7. Drop the cause of a detected cache miss, keeping its cost.
 		//    Unlike a plain "hit" or "miss", it outranks every hidden fact: it
 		//    shows only on the turn that missed, and says what to do about the
 		//    cost (an idle gap or a model switch).
 		["latest", "bare"],
-		// 7. Last, hide the target rate. Because the footer takes the fullest
+		// 8. Last, hide the target rate. Because the footer takes the fullest
 		//    state with the fewest lines, this fires only where the target alone
 		//    would add a line, as on a phone with the keyboard up.
 		["pace", "hidden"],
@@ -1076,7 +1078,11 @@ export default function (pi: ExtensionAPI) {
 			},
 			cost: { full: `${cost(2)}${sub}`, short: `${cost(1)}${sub}`, bare: `${cost(0)}${sub}`, least: cost(0) },
 			perTurn: { full: paint.quiet(SPEND_TOKEN, `$${formatDecimal(stats.averageCostPerTurn)}/turn`) },
-			cacheSession: { full: `${label("cache")}${sessionHitText}`, bare: sessionHitText },
+			cacheSession: {
+				full: `${label("cache")}${sessionHitText}${sessionHit !== null ? theme.fg("dim", ` (${formatTokens(stats.totalReused)} reused)`) : ""}`,
+				short: `${label("cache")}${sessionHitText}`,
+				bare: sessionHitText,
+			},
 			// "brief" is the step where a plain hit or miss hides; a detected miss stays to the end.
 			latest: missForms
 				? { full: theme.fg("error", missForms.full), short: theme.fg("error", missForms.short), brief: theme.fg("error", missForms.short), bare: theme.fg("error", missForms.bare) }
@@ -1088,10 +1094,6 @@ export default function (pi: ExtensionAPI) {
 						bare: "",
 					}
 					: undefined,
-			reuse: {
-				full: paint.ramp(CACHE_STOPS, sessionHit ?? 0, formatTokens(stats.totalReused)) +
-					theme.fg("dim", ` reused / ${formatTokens(stats.totalFresh)} new`),
-			},
 			// Once the time has passed the fact hides: there is nothing left to hurry back for,
 			// and the next request's miss shows what it cost.
 			expiry: expiresAt !== null && expiresAt > Date.now()

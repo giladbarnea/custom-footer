@@ -54,6 +54,7 @@ let footer = footerFactory(tui, theme, footerData);
 const render = (width = 200) => [...header.render(width), ...footer.render(width)].join("\n");
 assert.match(render(), /Original/);
 assert.match(render(), /60%/);
+assert.doesNotMatch(render(), /reused/, "Without session usage there must be no reused-token suffix");
 tui.terminal.rows = 40;
 const afterFirstRender = { ...calls };
 for (const width of [200, 40, 160, 56, 200]) render(width);
@@ -81,7 +82,8 @@ assert.match(output, /\$3\.00/);
 assert.match(output, /\$1\.50\/turn/);
 assert.match(output, /75\.0% session/);
 assert.match(output, /miss 30k re-billed/);
-assert.match(output, /150k reused \/ 50k new/);
+assert.match(output, /75\.0% session \(150k reused\)/);
+assert.doesNotMatch(output, /reused \/| new/);
 assert.equal(calls.history, 1, "Message appends must not rescan skills before turn_end");
 
 // Pi dispatches message_end before persisting the message.
@@ -104,7 +106,7 @@ leafId = "warm-1";
 output = render();
 assert.match(output, /\$6\.50/);
 assert.match(output, /\$2\.00\/turn/, "A warm is not an assistant turn");
-assert.match(output, /300k reused \/ 100k new/);
+assert.match(output, /75\.0% session \(300k reused\)/);
 assert.match(output, /75\.0% session/);
 assert.match(output, /miss 50k re-billed/);
 
@@ -118,7 +120,7 @@ leafId = "warm-2";
 output = render();
 assert.match(output, /\$6\.90/);
 assert.match(output, /\$2\.00\/turn/, "A warm is not an assistant turn");
-assert.match(output, /300k reused \/ 200k new/);
+assert.match(output, /60\.0% session \(300k reused\)/);
 assert.match(output, /60\.0% session/);
 
 messages = [

@@ -74,6 +74,7 @@ async function fixture({ persisted = false } = {}) {
 		get session() { return session; },
 		get manager() { return manager; },
 		faux, skills, render, errors,
+		footerAt: (width) => footer.render(width).join("\n"),
 		async reopen() {
 			const sessionFile = manager.getSessionFile();
 			session.dispose();
@@ -126,6 +127,29 @@ async function fixture({ persisted = false } = {}) {
 		},
 	};
 }
+
+test("the real Pi footer renders one cache summary and drops only its optional suffix when space runs out", async () => {
+	const setup = await fixture();
+	try {
+		setup.manager.appendMessage({
+			...fauxAssistantMessage("Cached response."),
+			provider: "footer-test", model: "local",
+			usage: {
+				input: 940_000, output: 10, cacheRead: 38_000_000, cacheWrite: 0, totalTokens: 38_940_010,
+				cost: { input: 0, output: 0, cacheRead: 0.1, cacheWrite: 0, total: 0.1 },
+			},
+		});
+		const wide = setup.footerAt(240);
+		assert.match(wide, /cache 97\.6% session \(38M reused\)/);
+		assert.doesNotMatch(wide, /reused \/|\bnew\b/);
+		const suffixBoundary = wide.length;
+		assert.equal(setup.footerAt(suffixBoundary), wide.replace(" (38M reused)", ""), "One column short must remove only the optional suffix in the real SDK-bound footer");
+		assert.deepEqual(setup.errors, []);
+		assert.equal(setup.faux.state.callCount, 0, "Rendering saved usage must not send a model request");
+	} finally {
+		await setup.dispose();
+	}
+});
 
 test("compaction removes summarized skills while retaining verbatim skills", async () => {
 	const setup = await fixture();

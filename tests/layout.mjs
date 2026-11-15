@@ -59,23 +59,23 @@ const footerAt = (width) => footer.render(width).map(stripVTControlCharacters);
 
 deepEqual(
 	footerAt(160),
-	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $3.00  $1.50/turn · cache 75.0% session · miss 30k re-billed · 150k reused / 50k new"],
-	"A wide terminal must pack every footer row onto one line, every fact in its full form",
+	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $3.00  $1.50/turn · cache 75.0% session (150k reused) · miss 30k re-billed"],
+	"A wide terminal must show one session cache summary with reused tokens only as a parenthesized suffix",
 );
 deepEqual(
-	footerAt(120),
-	["  main* ·  workspace/  · ▇75%  150k / 200k · $3.00  $1.50/turn · 75.0% session · miss 30k · 150k reused / 50k new"],
+	footerAt(91),
+	["  main* ·  workspace/  · ▇75%  150k / 200k · $3.00  $1.50/turn · 75.0% session · miss 30k"],
 	"To save a line, the footer must first drop the labels and shorten the last message's cache reading",
 );
 deepEqual(
-	footerAt(100),
-	["  main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new"],
+	footerAt(74),
+	["  main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k"],
 	"Rounding the cost and removing whitespace must come before dropping the branch icon and before hiding any fact",
 );
 deepEqual(
-	footerAt(80),
+	footerAt(72),
 	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k"],
-	"The first fact to hide must be the reused/new split, and only after the branch icon is gone",
+	"The branch icon must drop only after rounding the cost and removing whitespace",
 );
 deepEqual(
 	footerAt(60),
@@ -141,18 +141,18 @@ const showMiss = (scenario, entries, priced = true) => {
 showMiss("idle", [cachedTurn, turn(6 * minute, missUsage(true))]);
 deepEqual(
 	footerAt(200),
-	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.90  $0.45/turn · cache 30.0% session · miss after 6m idle: 100k re-billed $0.36 · 90k reused / 210k new"],
+	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.90  $0.45/turn · cache 30.0% session (90k reused) · miss after 6m idle: 100k re-billed $0.36"],
 	"A wide footer must show the miss cause, re-billed tokens and cost, as pi's notice does",
 );
 deepEqual(
-	footerAt(140),
-	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.90  $0.45/turn · 30.0% session · miss 6m idle $0.36 · 90k reused / 210k new"],
+	footerAt(101),
+	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.90  $0.45/turn · 30.0% session · miss 6m idle $0.36"],
 	"With the labels gone, the miss must keep its two most important facts: cause and cost",
 );
 deepEqual(
-	footerAt(90),
+	footerAt(82),
 	[" main* workspace/ ▇75% 150k / 200k $1 $0.45/turn 30.0% session miss 6m idle $0.36"],
-	"The miss cause must outlast the reused/new split",
+	"The miss cause must outlast the reused-token suffix",
 );
 deepEqual(
 	footerAt(72),
@@ -178,12 +178,12 @@ deepEqual(
 showMiss("unpriced", [cachedTurn, turn(6 * minute, missUsage(false))], false);
 deepEqual(
 	footerAt(200),
-	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.08  $0.04/turn · cache 30.0% session · miss after 6m idle: 100k re-billed · 90k reused / 210k new"],
+	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.08  $0.04/turn · cache 30.0% session (90k reused) · miss after 6m idle: 100k re-billed"],
 	"Without a cost, the wide miss must leave the cost out",
 );
 deepEqual(
-	footerAt(140),
-	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.08  $0.04/turn · 30.0% session · miss 6m idle 100k · 90k reused / 210k new"],
+	footerAt(100),
+	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.08  $0.04/turn · 30.0% session · miss 6m idle 100k"],
 	"Without a cost, the re-billed tokens must take its place",
 );
 deepEqual(
@@ -195,24 +195,24 @@ deepEqual(
 showMiss("recent", [cachedTurn, turn(4 * minute, missUsage(true))]);
 deepEqual(
 	footerAt(200),
-	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.90  $0.45/turn · cache 30.0% session · miss 100k re-billed $0.36 · 90k reused / 210k new"],
+	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.90  $0.45/turn · cache 30.0% session (90k reused) · miss 100k re-billed $0.36"],
 	"A miss within the cache TTL and on the same model must name no cause",
 );
 deepEqual(
-	footerAt(120),
-	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.90  $0.45/turn · 30.0% session · miss $0.36 · 90k reused / 210k new"],
+	footerAt(93),
+	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.90  $0.45/turn · 30.0% session · miss $0.36"],
 	"Without a cause, the short miss must show only its cost",
 );
 
 showMiss("switch", [cachedTurn, turn(6 * minute, missUsage(true), "model-2")]);
 deepEqual(
 	footerAt(200),
-	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.90  $0.45/turn · cache 30.0% session · miss after model switch: 100k re-billed $0.36 · 90k reused / 210k new"],
+	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.90  $0.45/turn · cache 30.0% session (90k reused) · miss after model switch: 100k re-billed $0.36"],
 	"A model switch must outrank the idle gap as the cause, as in pi's notice",
 );
 deepEqual(
-	footerAt(140),
-	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.90  $0.45/turn · 30.0% session · miss model switch $0.36 · 90k reused / 210k new"],
+	footerAt(106),
+	["  main* ·  workspace/  · ▇75%  150k / 200k · $0.90  $0.45/turn · 30.0% session · miss model switch $0.36"],
 	"The short miss must name the model switch",
 );
 
@@ -227,7 +227,7 @@ showMiss("partial", [cachedTurn, turn(4 * minute, {
 cacheReadPricePerMillion = 2;
 deepEqual(
 	footerAt(200),
-	[" \uf126 main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.75  $0.38/turn · cache 43.3% session · miss 60k re-billed $0.22 · 130k reused / 170k new"],
+	[" \uf126 main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.75  $0.38/turn · cache 43.3% session (130k reused) · miss 60k re-billed $0.22"],
 	"A partial miss must price its re-billed tokens at the turn's own cache-read rate",
 );
 
@@ -243,7 +243,7 @@ showMiss("warm", [
 ]);
 deepEqual(
 	footerAt(200),
-	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.94  $0.45/turn · cache 47.5% session · miss 100k re-billed $0.36 · 190k reused / 210k new"],
+	["  main* ·  workspace/  · context ▇75%  150k / 200k tokens · $0.94  $0.45/turn · cache 47.5% session (190k reused) · miss 100k re-billed $0.36"],
 	"A cache warm two minutes before the miss must leave no idle cause",
 );
 
@@ -278,7 +278,8 @@ const showPace = (scenario, model, quotaCache) => {
 };
 branch = [{ type: "message", message: assistant(20_000, 80_000, 1) }, { type: "message", message: assistant(30_000, 70_000, 2) }];
 cacheReadPricePerMillion = 0;
-const fullFacts = " \uf126 main* ·  workspace/  · context ▇75%  150k / 200k tokens · $3.00  $1.50/turn · cache 75.0% session · miss 30k re-billed · 150k reused / 50k new";
+const fullFacts = " \uf126 main* ·  workspace/  · context ▇75%  150k / 200k tokens · $3.00  $1.50/turn · cache 75.0% session (150k reused) · miss 30k re-billed";
+const fullFactsWithoutSuffix = fullFacts.replace(" (150k reused)", "");
 
 showPace("under budget", opus, { claude: { usages: [pool("CLAUDE", 80), pool("FABLE", 27)] }, openrouter: { budget: {} } });
 deepEqual(
@@ -287,24 +288,24 @@ deepEqual(
 	"A wide footer must show the pace in full: the bar, pace ≤ target, and the reset time",
 );
 deepEqual(
-	footerAt(199),
-	[`${fullFacts} · pace 0.86× ≤ target 2.69× · 12h`],
-	"The first thing to go must be the pace bar and the words 'resets in', before any label",
+	footerAt(173),
+	[`${fullFactsWithoutSuffix} · pace 0.86× ≤ target 2.69× · 12h`],
+	"After the reused-token suffix, the pace bar and the words 'resets in' must go before any label",
 );
 deepEqual(
-	footerAt(127),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace 0.86× ≤ target 2.69× · 12h"],
+	footerAt(104),
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace 0.86× ≤ target 2.69× · 12h"],
 	"The pace reading and the reset time must outlast the labels, the rounding, the whitespace and the branch icon",
 );
 deepEqual(
-	footerAt(120),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace ≤ target (2.69×)"],
+	footerAt(94),
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace ≤ target (2.69×)"],
 	"The pace reading and the reset time must be the first whole facts to hide, leaving the target rate",
 );
 deepEqual(
 	footerAt(100),
 	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace ≤ target (2.69×)"],
-	"The reused/new split must hide before the word 'target' goes",
+	"The reused-token suffix must hide before the word 'target' goes",
 );
 deepEqual(
 	footerAt(70),
@@ -364,28 +365,28 @@ deepEqual(footerAt(240), [`${fullFacts} · pace ━━━━━━●┊─ 0.86
 showPace("2.5 hours old", opus, staleCache(150));
 deepEqual(footerAt(240), [`${fullFacts} · pace ━━━━━━●┊─ 0.86× ≤ target 2.69× · resets in 12h · 2h old`], "A reading hours old must show its age in whole hours, after the reset time");
 deepEqual(
-	footerAt(208),
-	[`${fullFacts} · pace 0.86× ≤ target 2.69× · 12h · 2h old`],
+	footerAt(182),
+	[`${fullFactsWithoutSuffix} · pace 0.86× ≤ target 2.69× · 12h · 2h old`],
 	"The pace bar must go before the age",
 );
 deepEqual(
-	footerAt(160),
-	[" \uf126 main* ·  workspace/  · ▇75%  150k / 200k · $3.00  $1.50/turn · 75.0% session · miss 30k · 150k reused / 50k new · pace 0.86× ≤ target 2.69× · 12h · 2h old"],
+	footerAt(134),
+	[" \uf126 main* ·  workspace/  · ▇75%  150k / 200k · $3.00  $1.50/turn · 75.0% session · miss 30k · pace 0.86× ≤ target 2.69× · 12h · 2h old"],
 	"A laptop-width footer must keep the age, after the labels have gone",
 );
 deepEqual(
-	footerAt(136),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace 0.86× ≤ target 2.69× · 12h · 2h old"],
+	footerAt(113),
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace 0.86× ≤ target 2.69× · 12h · 2h old"],
 	"The age must outlast the whitespace and the branch icon",
 );
 deepEqual(
-	footerAt(134),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace 0.86× ≤ target 2.69× · 12h"],
+	footerAt(104),
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace 0.86× ≤ target 2.69× · 12h"],
 	"The age must go before the pace reading, the reset time and every other part of the pace left",
 );
 deepEqual(
-	footerAt(120),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace ≤ target (2.69×)"],
+	footerAt(94),
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace ≤ target (2.69×)"],
 	"Once the age is gone, the pace narrows as before",
 );
 deepEqual(footerAt(52), [" main* workspace/ ▇75% $3 miss 30k pace ≤ 2.69×"], "A stale reading's shortest form is the same as a fresh one's");
@@ -404,8 +405,8 @@ deepEqual(
 	"Over budget, the sign must turn to > and the dot must pass the time marker",
 );
 deepEqual(
-	footerAt(199),
-	[`${fullFacts} · pace 1.03× > target 0.67× · 12h`],
+	footerAt(173),
+	[`${fullFactsWithoutSuffix} · pace 1.03× > target 0.67× · 12h`],
 	"Over budget, the medium form must keep the > sign",
 );
 deepEqual(
@@ -426,8 +427,8 @@ deepEqual(
 );
 showPace("fable capped out", fable, { claude: { usages: [pool("CLAUDE", 99.9), pool("FABLE", 27)] } });
 deepEqual(
-	footerAt(120),
-	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k 150k reused / 50k new pace > target (0.03×)"],
+	footerAt(94),
+	[" main* workspace/ ▇75% 150k / 200k $3 $1.50/turn 75.0% session miss 30k pace > target (0.03×)"],
 	"The sign must compare the two rates shown: a nearly spent Claude week puts a slow Fable over its target",
 );
 showPace("fable without claude", fable, { claude: { usages: [pool("FABLE", 27)] } });
@@ -469,7 +470,7 @@ const colorTheme = {
 };
 const colorFooter = footerFactory(tui, colorTheme, { onBranchChange: () => () => {}, getExtensionStatuses: () => new Map() });
 const paint = (token, text) => colorTheme.fg(token, text);
-const paceAt = (width) => colorFooter.render(width)[0].split("new").at(-1);
+const paceAt = (width) => colorFooter.render(width)[0].split(paint("dim", "pace ")).at(-1);
 
 showPace("on pace", opus, { claude: { usages: [pool("CLAUDE", 50, 84)] } });
 ok(paceAt(230).includes(`${paint("success", "1.00×")} ${paint("dim", "≤")} ${paint("dim", "target ")}${paint("success", "1.00×")}`),
@@ -505,33 +506,33 @@ context.modelRegistry.isUsingOAuth = () => true;
 await showSession("issue 9", [...Array.from({ length: 50 }, (_, index) => paidTurn(index, 2_000, 98_000)), paidTurn(60, 0, 100_000)]);
 deepEqual(
 	footerAt(240),
-	[" \uf126 main* ·  wa/  · context ▂16%  160k / 1.0M tokens · $5.05 sub  $0.10/turn · cache 98.0% session · hit 100% · 5.0M reused / 100k new · pace ━━━┊━●─── 1.19× > target 0.82× · resets in 3d 12h"],
+	[" \uf126 main* ·  wa/  · context ▂16%  160k / 1.0M tokens · $5.05 sub  $0.10/turn · cache 98.0% session (5.0M reused) · hit 100% · pace ━━━┊━●─── 1.19× > target 0.82× · resets in 3d 12h"],
 	"A wide footer must show the bar against its value, costs at two places, the subscription mark and the last message as a hit",
 );
 deepEqual(
-	footerAt(152),
-	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit 100% · 5.0M reused / 100k new · pace 1.19× > target 0.82× · 3d 12h"],
+	footerAt(125),
+	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit 100% · pace 1.19× > target 0.82× · 3d 12h"],
 	"The hit must keep its percentage until the labels have gone",
 );
 deepEqual(
-	footerAt(147),
-	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit · 5.0M reused / 100k new · pace 1.19× > target 0.82× · 3d 12h"],
+	footerAt(120),
+	[" \uf126 main* ·  wa/  · ▂16%  160k / 1.0M · $5.05 sub  $0.10/turn · 98.0% session · hit · pace 1.19× > target 0.82× · 3d 12h"],
 	"The hit's percentage must be the first part of it to go, before the cost is rounded",
 );
 deepEqual(
-	footerAt(122),
-	[" main* wa/ ▂16% 160k / 1.0M $5 sub $0.10/turn 98.0% session hit 5.0M reused / 100k new pace 1.19× > target 0.82× · 3d 12h"],
+	footerAt(99),
+	[" main* wa/ ▂16% 160k / 1.0M $5 sub $0.10/turn 98.0% session hit pace 1.19× > target 0.82× · 3d 12h"],
 	"The subscription mark must outlast all the formatting: the labels, the rounding, the whitespace and the branch icon",
 );
 deepEqual(
-	footerAt(120),
-	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session hit 5.0M reused / 100k new pace 1.19× > target 0.82× · 3d 12h"],
+	footerAt(95),
+	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session hit pace 1.19× > target 0.82× · 3d 12h"],
 	"The subscription mark must be the first whole fact to hide, before any part of the pace",
 );
 deepEqual(
 	footerAt(90),
 	[" main* wa/ ▂16% 160k / 1.0M $5 $0.10/turn 98.0% session hit pace > target (0.82×)"],
-	"The hit must outlast the reused/new split",
+	"The hit must outlast the reused-token suffix",
 );
 deepEqual(
 	footerAt(78),
@@ -563,7 +564,7 @@ deepEqual(footerAt(45), [" main wa/ ▂16% $5 $0.10/turn pace > 0.82×"], "At 45
 deepEqual(footerAt(31), [" main wa/ ▂16% $5 pace > 0.82×"], "At the narrowest width that holds it, the pace keeps its left-side label");
 deepEqual(footerAt(30), [" main wa/ ▂16% $5"], "The unchanged last rung hides the pace only where it would add a line");
 showPace("pace wording, under budget", opus, { claude: { usages: [pool("CLAUDE", 41, 84.5)] } });
-deepEqual(footerAt(240), ["  main ·  wa/  · context ▂16%  160k / 1.0M tokens · $5.05 sub  $0.10/turn · cache 98.0% session · hit 100% · 5.0M reused / 100k new · pace ━━━●┊──── 0.82× ≤ target 1.17× · resets in 3d 12h"], "The under-budget wide form must also say 'pace', without new parentheses");
+deepEqual(footerAt(240), ["  main ·  wa/  · context ▂16%  160k / 1.0M tokens · $5.05 sub  $0.10/turn · cache 98.0% session (5.0M reused) · hit 100% · pace ━━━●┊──── 0.82× ≤ target 1.17× · resets in 3d 12h"], "The under-budget wide form must also say 'pace', without new parentheses");
 deepEqual(footerAt(66), [" main wa/ ▂16% $5 $0.10/turn 98.0% session pace ≤ target (1.17×)"], "The under-budget collapsed form must keep the ≤ sign and target parentheses");
 deepEqual(footerAt(61), [" main wa/ ▂16% $5 $0.10/turn pace ≤ target (1.17×)"], "The under-budget form has the same hide order");
 deepEqual(footerAt(45), [" main wa/ ▂16% $5 $0.10/turn pace ≤ 1.17×"], "The under-budget narrowest form must keep 'pace'");
@@ -586,7 +587,7 @@ ok(wide().includes(" · $123 sub  $61.7/turn · "), `From $100, a cost must show
 await showSession("under a cent", [paidTurn(0, 2_000, 98_000, 0.004)]);
 ok(wide().includes(" · $0.00 sub  $0.00/turn · "), `Below $10, a cost must show two decimal places, even under a cent. Got: ${wide()}`);
 await showSession("whole session cached", [paidTurn(0, 0, 100_000), paidTurn(1, 0, 100_000)]);
-ok(wide().includes(" · cache 100% session · "), `A full session hit rate must show no decimal place. Got: ${wide()}`);
+ok(wide().includes(" · cache 100% session (200k reused) · "), `A full session hit rate must show no decimal place. Got: ${wide()}`);
 // A week at 5% used with 8.5 of 168 hours left: target 95 / 5.06 = 18.8×, burn 5 / 94.94 = 0.05×.
 showPace("high target", opus, { claude: { usages: [pool("CLAUDE", 5, 8.5)] } });
 ok(wide().includes(" 0.05× ≤ target 18.8× · "), `From 10×, a rate must show one decimal place. Got: ${wide()}`);
@@ -605,6 +606,25 @@ deepEqual(footerAt(78), [" main* wa/ ▂16% 160k / 1.0M $0 $0.10/turn 36.0% sess
 // A partial miss above 90%: after a 200k prompt, 195k of 210k were read (92.9%) and 5k re-billed.
 await showSession("partial miss", [paidTurn(0, 0, 200_000), paidTurn(1, 15_000, 195_000)]);
 ok(wide().includes(" · hit 93% · "), `Above 90%, the last message must be a hit even when pi's accounting detects a small miss. Got: ${wide()}`);
+context.modelRegistry.isUsingOAuth = () => true;
+gitWorktreeStatus = "";
+await showSession("issue 10", [paidTurn(0, 940_000, 38_000_000)]);
+const oneCacheSummary = "  main ·  wa/  · context ▂16%  160k / 1.0M tokens · $0.10 sub  $0.10/turn · cache 97.6% session (38M reused) · hit 98% · pace ━━━┊━●─── 1.19× > target 0.82× · resets in 3d 12h";
+const withoutReuseSuffix = "  main ·  wa/  · context ▂16%  160k / 1.0M tokens · $0.10 sub  $0.10/turn · cache 97.6% session · hit 98% · pace ━━━┊━●─── 1.19× > target 0.82× · resets in 3d 12h";
+deepEqual(footerAt(240), [oneCacheSummary], "Issue 10 must show 97.6% session (38M reused), with no standalone token-count widget");
+deepEqual(footerAt(177), [oneCacheSummary], "At the last column that holds all details, the reused-token suffix must still show");
+ok(colorFooter.render(240)[0].includes(paint("dim", " (38M reused)")), "The optional suffix must use the quiet label color, not a second measurement ramp");
+deepEqual(footerAt(176), [withoutReuseSuffix], "One column less must drop only the suffix, preserving the bar, labels, subscription, hit rate, token counts and costs");
+deepEqual(footerAt(164), [withoutReuseSuffix], "The suffix must stay absent through the last width that holds the full pace bar");
+deepEqual(footerAt(163), ["  main ·  wa/  · context ▂16%  160k / 1.0M tokens · $0.10 sub  $0.10/turn · cache 97.6% session · hit 98% · pace 1.19× > target 0.82× · 3d 12h"], "Only after the suffix has gone may the pace bar shorten");
+for (let width = 30; width <= 240; width += 1) {
+	const rendered = footerAt(width).join("\n");
+	const sessionSummaries = rendered.match(/% session/g) ?? [];
+	const reusedCounts = rendered.match(/reused/g) ?? [];
+	ok(sessionSummaries.length <= 1, `At ${width} columns there must be at most one session summary. Got: ${rendered}`);
+	ok(!/reused \/|\bnew\b/.test(rendered), `At ${width} columns the old standalone widget must never return. Got: ${rendered}`);
+	ok(reusedCounts.length === 0 || (reusedCounts.length === 1 && rendered.includes("97.6% session (38M reused)")), `At ${width} columns reused tokens must only be a suffix of the session rate. Got: ${rendered}`);
+}
 context.modelRegistry.isUsingOAuth = () => false;
 
 deepEqual(executedCommands.filter((command) => command !== "git"), [], "The footer must read the quota cache file and never run a command for it");
