@@ -10,13 +10,37 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pi: ["1.4.0", "1.5.2"]
+    env:
+      PI_VERSION: ${{ matrix.pi }}
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: "24"
           cache: npm
-      - run: npm ci --ignore-scripts
+      - name: Install test dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm install --no-save --package-lock=false --ignore-scripts \
+            "@earendil-works/pi-ai@$PI_VERSION" \
+            "@earendil-works/pi-coding-agent@$PI_VERSION" \
+            "@earendil-works/pi-tui@$PI_VERSION"
+      - name: Verify Pi versions
+        run: |
+          node --version
+          node <<'NODE'
+          for (const name of ["pi-ai", "pi-coding-agent", "pi-tui"]) {
+            const actual = require(`./node_modules/@earendil-works/${name}/package.json`).version;
+            console.log(`${name}: ${actual}`);
+            if (actual !== process.env.PI_VERSION) {
+              throw new Error(`Expected ${name} ${process.env.PI_VERSION}, got ${actual}`);
+            }
+          }
+          NODE
       - run: npm run check
       - run: npm test
       - run: npm pack --dry-run
