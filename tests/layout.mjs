@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { deepEqual, ok } from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { stripVTControlCharacters } from "node:util";
@@ -457,9 +457,9 @@ deepEqual(footerAt(230), [fullFacts], "A model outside the quota pools must show
 showPace("window over", opus, { claude: { usages: [pool("CLAUDE", 80, -1)] } });
 deepEqual(footerAt(230), [fullFacts], "A reading from a week that has already reset must show no pace");
 
-// Colours follow the quota tool's heat map, for burn and target separately:
-// green within 5% of 1.0×; burn heats to amber at 1.25× and red at 2×, and
-// cools to the cool end at 0.25×; the target rate runs the other way.
+// Colours follow the quota tool's heat map over burn ÷ target, one colour for the
+// burn, its bar, the sign and the target: green within 5%, amber at 1.25× and red
+// at 2×, cooling to the cool end at 0.25×.
 const rgb = { mdLink: "0;0;255", success: "0;255;0", warning: "255;255;0", error: "255;0;0", dim: "9;9;9" };
 const colorTheme = {
 	fg: (token, text) => `\x1b[38;2;${rgb[token] ?? "1;1;1"}m${text}\x1b[39m`,
@@ -473,17 +473,78 @@ const paint = (token, text) => colorTheme.fg(token, text);
 const paceAt = (width) => colorFooter.render(width)[0].split(paint("dim", "pace ")).at(-1);
 
 showPace("on pace", opus, { claude: { usages: [pool("CLAUDE", 50, 84)] } });
-ok(paceAt(230).includes(`${paint("success", "1.00×")} ${paint("dim", "≤")} ${paint("dim", "target ")}${paint("success", "1.00×")}`),
-	`On pace, burn and target must both be green and the sign dim. Got: ${JSON.stringify(paceAt(230))}`);
+ok(paceAt(230).includes(`${paint("success", "1.00×")} ${paint("success", "≤")} ${paint("dim", "target ")}${paint("success", "1.00×")}`),
+	`On pace, burn, the sign and target must all be green. Got: ${JSON.stringify(paceAt(230))}`);
 showPace("idle week", opus, { claude: { usages: [pool("CLAUDE", 0, 42)] } });
-ok(paceAt(230).includes(`${paint("mdLink", "●")}${paint("dim", "─────┊──")} ${paint("mdLink", "0.00×")} ${paint("dim", "≤")} ${paint("dim", "target ")}${paint("mdLink", "4.00×")}`),
-	`With allowance going unused, burn, its bar and the target must take the cool colour. Got: ${JSON.stringify(paceAt(230))}`);
+ok(paceAt(230).includes(`${paint("mdLink", "●")}${paint("dim", "─────┊──")} ${paint("mdLink", "0.00×")} ${paint("mdLink", "≤")} ${paint("dim", "target ")}${paint("mdLink", "4.00×")}`),
+	`With allowance going unused, burn, its bar, the sign and the target must take the cool colour. Got: ${JSON.stringify(paceAt(230))}`);
 showPace("spent early", opus, { claude: { usages: [pool("CLAUDE", 100, 84)] } });
 ok(paceAt(230).includes(`${paint("error", "━━━━")}${paint("dim", "┊")}${paint("error", "━━━●")}${paint("dim", "")} ${paint("error", "2.00×")} ${paint("error", ">")} ${paint("dim", "target ")}${paint("error", "0.00×")}`),
 	`With the week spent at twice the pace, burn, its bar, the sign and the target must be red. Got: ${JSON.stringify(paceAt(230))}`);
-showPace("fable cool burn, hot target", fable, { claude: { usages: [pool("CLAUDE", 100, 84), pool("FABLE", 10, 84)] } });
-ok(paceAt(230).includes(`${paint("mdLink", "0.20×")} ${paint("error", ">")} ${paint("dim", "target ")}${paint("error", "0.00×")}`),
-	`Burn and target must be coloured separately: a cool burn beside a red target. Got: ${JSON.stringify(paceAt(230))}`);
+showPace("fable slow burn, spent target", fable, { claude: { usages: [pool("CLAUDE", 100, 84), pool("FABLE", 10, 84)] } });
+ok(paceAt(230).includes(`${paint("error", "0.20×")} ${paint("error", ">")} ${paint("dim", "target ")}${paint("error", "0.00×")}`),
+	`A slow burn over a spent target is over budget: burn, sign and target must all be red. Got: ${JSON.stringify(paceAt(230))}`);
+
+// One colour per reading (Gilad, Nov 22): burn, sign and target take the same colour,
+// so the slow end reaches full blue and the fast end full red for all three. The
+// six readings of the before-and-after screenshot, halfway through the week.
+const paceColours = (usedPercent) => {
+	showPace(`one colour at ${usedPercent}%`, opus, { claude: { usages: [pool("CLAUDE", usedPercent, 84)] } });
+	const rendered = paceAt(230);
+	const rates = [...rendered.matchAll(/(\x1b\[[0-9;]+m)[0-9.]+×\x1b\[39m/g)].map((match) => match[1]);
+	const sign = rendered.match(/(\x1b\[[0-9;]+m)[>≤]\x1b\[39m/)[1];
+	return { burn: rates[0], sign, target: rates.at(-1) };
+};
+for (const usedPercent of [20, 40, 50, 53.5, 60, 70]) {
+	const { burn, sign, target } = paceColours(usedPercent);
+	ok(burn === sign && sign === target, `At ${usedPercent}% used, burn, sign and target must share one colour. Got: ${JSON.stringify({ burn, sign, target })}`);
+}
+deepEqual(paceColours(20).target, colorTheme.getFgAnsi("mdLink"), "Very slow (0.40× ≤ 1.60×): the target must reach the full cool colour, as the burn does");
+deepEqual(paceColours(70).burn, colorTheme.getFgAnsi("error"), "Very fast (1.40× > 0.60×): the burn must reach full red, as the target does");
+
+// The sign takes the same heat map, read as burn over target (custom-footer #12):
+// green within 5% of the target, warming to amber at 1.25× and red at 2×, cooling
+// to the cool end at 0.25×. Halfway through the week (84 of 168 hours left), u%
+// used gives burn / target = u / (100 - u). The issue's screenshot was 53.5% used:
+// 1.07× > target 0.93×, burn 1.15× its target.
+const signRgb = (usedPercent) => {
+	showPace(`sign at ${usedPercent}%`, opus, { claude: { usages: [pool("CLAUDE", usedPercent, 84)] } });
+	const [, red, green, blue] = paceAt(230).match(/\x1b\[38;2;(\d+);(\d+);(\d+)m[>≤]\x1b\[39m/).map(Number);
+	return { red, green, blue };
+};
+for (const [usedPercent, ratio] of [[50, "1.00"], [50.98, "1.04"], [48.98, "0.96"]]) {
+	deepEqual(signRgb(usedPercent), { red: 0, green: 255, blue: 0 }, `Burn at ${ratio}× its target is on pace: the sign must be green`);
+}
+for (const [usedPercent, ratio] of [[51.46, "1.06"], [53.5, "1.15 (the issue's 1.07× > 0.93×)"]]) {
+	const { red, green, blue } = signRgb(usedPercent);
+	ok(red > 0 && red < 255 && green === 255 && blue === 0, `Burn at ${ratio}× its target is a little fast: the sign must warm from green toward amber, short of it. Got: ${JSON.stringify({ red, green, blue })}`);
+}
+deepEqual(signRgb(68.75), { red: 255, green: 0, blue: 0 }, "Burn at 2.2× its target is past 2×: the sign must be red");
+for (const [usedPercent, ratio] of [[48.45, "0.94"], [40, "0.67"]]) {
+	const { red, green, blue } = signRgb(usedPercent);
+	ok(red === 0 && green > 0 && blue > 0 && blue < 255, `Burn at ${ratio}× its target is a little slow: the sign must cool from green toward blue, short of it. Got: ${JSON.stringify({ red, green, blue })}`);
+}
+deepEqual(signRgb(16.67), { red: 0, green: 0, blue: 255 }, "Burn at 0.2× its target is past 0.25×: the sign must be fully cool");
+
+// Zero and non-finite rates. Like the quota tool, which floors a rate at the smallest
+// float before its log, a zero burn is fully cool and a zero target fully red; a burn
+// equal to its target, zero over zero included, is on pace. A rate that is not a
+// number is no reading, which the quota tool paints dim.
+const paceSign = () => paceAt(230).match(/(\x1b\[[0-9;]+m)([>≤])\x1b\[39m/);
+const edgeCases = [
+	["idle Fable in a spent Claude week, 0× ≤ 0×", fable, { claude: { usages: [pool("CLAUDE", 100, 84), pool("FABLE", 0, 84)] } }, "≤", "success"],
+	["a burn above a zero target, 2× > 0×", opus, { claude: { usages: [pool("CLAUDE", 100, 84)] } }, ">", "error"],
+	["a zero burn below a target, 0× ≤ 2×", opus, { claude: { usages: [pool("CLAUDE", 0, 84)] } }, "≤", "mdLink"],
+	["an infinite burn, ∞ > 0×", opus, { claude: { usages: [{ ...pool("CLAUDE", 50, 84), weekly: { ...weekly(50, 84), used_pct: "INFINITY" } }] } }, ">", "error"],
+	["a used share that is not a number", opus, { claude: { usages: [{ ...pool("CLAUDE", 50, 84), weekly: { ...weekly(50, 84), used_pct: "n/a" } }] } }, "≤", "dim"],
+];
+for (const [scenario, model, quotaCache, glyph, token] of edgeCases) {
+	showPace(`edge: ${scenario}`, model, quotaCache);
+	if (scenario.startsWith("an infinite")) writeFileSync(quotaCacheFile, readFileSync(quotaCacheFile, "utf8").replace('"INFINITY"', "1e999"));
+	const rendered = paceAt(230);
+	ok(!/\x1b\[[0-9;]*NaN/.test(rendered), `${scenario}: every colour must be a valid escape sequence. Got: ${JSON.stringify(rendered)}`);
+	deepEqual(paceSign()?.slice(1), [colorTheme.getFgAnsi(token), glyph], `${scenario}: the sign must be ${glyph} in ${token}. Got: ${JSON.stringify(rendered)}`);
+}
 
 // ── The collapsed footer of custom-footer #9 ────────────────────────────────
 // The issue's phone screenshot read " main wa/ ▁ 16% $5 sub $0.099/turn latest 100% > target 0.82×".
@@ -569,10 +630,11 @@ deepEqual(footerAt(66), [" main wa/ ▂16% $5 $0.10/turn 98.0% session pace ≤ 
 deepEqual(footerAt(61), [" main wa/ ▂16% $5 $0.10/turn pace ≤ target (1.17×)"], "The under-budget form has the same hide order");
 deepEqual(footerAt(45), [" main wa/ ▂16% $5 $0.10/turn pace ≤ 1.17×"], "The under-budget narrowest form must keep 'pace'");
 deepEqual(footerAt(31), [" main wa/ ▂16% $5 pace ≤ 1.17×"], "The under-budget form must also fit at 31 columns");
-for (const [scenario, used, signToken, sign, target] of [["over", 59, "error", ">", "0.82×"], ["under", 41, "dim", "≤", "1.17×"]]) {
+for (const [scenario, used, sign, target] of [["over", 59, ">", "0.82×"], ["under", 41, "≤", "1.17×"]]) {
 	showPace(`pace wording colors, ${scenario}`, opus, { claude: { usages: [pool("CLAUDE", used, 84.5)] } });
+	const wideSign = colorFooter.render(240)[0].match(new RegExp(`\x1b\\[38;2;[0-9;]+m${sign}\x1b\\[39m`))[0];
 	const rendered = colorFooter.render(61)[0];
-	ok(rendered.includes(`${paint("dim", "pace ")}${paint(signToken, sign)} ${paint("dim", "target ")}${paint("dim", "(")}`), `${scenario}: the new label and parentheses must stay dim, and the sign must keep its color. Got: ${JSON.stringify(rendered)}`);
+	ok(rendered.includes(`${paint("dim", "pace ")}${wideSign} ${paint("dim", "target ")}${paint("dim", "(")}`), `${scenario}: the new label and parentheses must stay dim, and the sign must keep its wide-form color. Got: ${JSON.stringify(rendered)}`);
 	ok(rendered.includes(target), `${scenario}: the colored target must keep its value. Got: ${JSON.stringify(rendered)}`);
 }
 gitWorktreeStatus = " M index.ts\n";

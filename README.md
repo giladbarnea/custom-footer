@@ -43,7 +43,7 @@ Skills get one row for every eight terminal rows past the first six, with a mini
 
 Skill age measures context-token growth since the first response after a skill load. Cache misses mirror Pi’s own miss accounting: the tokens re-billed since the last request or cache warm, their extra cost over cache reads, and the idle time. Costs use the model’s reported pricing, including when you use a subscription. Numbers show two decimal places below 10, one from 10, and none from 100.
 
-The pace comes from `~/.cache/quota/provider-usage.json` (or under `XDG_CACHE_HOME`), which the author’s `quota` tool writes. That tool is not public yet, and without the file the footer shows no pace. The reading is for the pool of the session’s model: Claude, Fable or Codex. The footer only reads that file. It never runs `quota` and never fetches. Pace and target each take a color from `quota`’s heat map: green near 1.0×, cool where allowance goes unused, amber then red where it runs out early. A Fable session shows Fable’s target capped by the room left in the shared Claude week.
+The pace comes from `~/.cache/quota/provider-usage.json` (or under `XDG_CACHE_HOME`), which the author’s `quota` tool writes. That tool is not public yet, and without the file the footer shows no pace. The reading is for the pool of the session’s model: Claude, Fable or Codex. The footer only reads that file. It never runs `quota` and never fetches. Pace, sign and target share one color from `quota`’s heat map, read as pace over target: green within 5% of the target, bluer the slower you burn, redder the faster. A Fable session shows Fable’s target capped by the room left in the shared Claude week.
 
 ## Development
 

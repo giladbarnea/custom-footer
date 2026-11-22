@@ -667,15 +667,15 @@ function readPace(model: ExtensionContext["model"], now: number): Pace | null {
 	}
 }
 
-/** Where a rate sits on PACE_STOPS, by its distance from the ideal 1.0×. Mirrors the quota tool's
- * DashboardPalette.pace: a burn rate heats above 1.0× (amber at 1.25×, red at 2×) and cools below it;
- * a target rate runs the other way. Both are ideal within 5% of 1.0×.
+/** Where a reading sits on PACE_STOPS: the one position that colours its burn, sign and target alike.
+ * It is the quota tool's DashboardPalette.pace curve over burn ÷ target: ideal within 5%, heating to
+ * amber at 1.25× and red at 2×, cooling to the cool end at 0.25×. Both rates floor at the smallest
+ * float, as the quota tool floors a rate, so 0× against 0× is on pace and a zero target is red.
  * @example
- * [pacePosition(1, false), pacePosition(1.25, false), pacePosition(2, false), pacePosition(0.25, false)] // [0, 0.5, 1, -1]
- * [pacePosition(0.8, true), pacePosition(4, true)] // [0.5, -1]
+ * [pacePosition(1, 1), pacePosition(1.25, 1), pacePosition(1.5, 0.75), pacePosition(0.4, 1.6), pacePosition(0, 0), pacePosition(0.2, 0)] // [0, 0.5, 1, -1, 0, 1]
  */
-function pacePosition(rate: number, isTarget: boolean): number {
-	const pressure = (isTarget ? -1 : 1) * Math.log2(rate);
+function pacePosition(burn: number, target: number): number {
+	const pressure = Math.log2(Math.max(burn, Number.MIN_VALUE) / Math.max(target, Number.MIN_VALUE));
 	const idealBand = Math.log2(1.05);
 	const amberPoint = Math.log2(1.25);
 	if (pressure < -idealBand) return -Math.min(1, (-pressure - idealBand) / (2 - idealBand));
@@ -1050,16 +1050,18 @@ export default function (pi: ExtensionAPI) {
 		const missForms = !isHit && stats.latestCacheMiss ? cacheMissForms(stats.latestCacheMiss) : null;
 		const paceForms = (reading: Pace): FactForms => {
 			const dim = (text: string) => theme.fg("dim", text);
-			const burnHeat = (text: string) => paint.ramp(PACE_STOPS, pacePosition(reading.burn, false), text);
-			const burn = burnHeat(`${formatDecimal(reading.burn)}×`);
-			const target = paint.ramp(PACE_STOPS, pacePosition(reading.target, true), `${formatDecimal(reading.target)}×`);
-			// The sign carries the verdict, and colour repeats it.
-			const sign = reading.burn > reading.target ? theme.fg("error", ">") : dim("≤");
+			// A rate that is not a number is no reading, which the quota tool paints dim.
+			const position = pacePosition(reading.burn, reading.target);
+			const heat = (text: string) => Number.isNaN(position) ? dim(text) : paint.ramp(PACE_STOPS, position, text);
+			const burn = heat(`${formatDecimal(reading.burn)}×`);
+			const target = heat(`${formatDecimal(reading.target)}×`);
+			// The sign carries the verdict, and its colour is the reading's, like the rates beside it.
+			const sign = heat(reading.burn > reading.target ? ">" : "≤");
 			const resets = formatRemaining(reading.resetsInMs);
 			// A stale reading keeps showing, with its age until "brief", the form without it.
 			const age = reading.ageMs > PACE_STALE_AFTER_MS ? dim(` · ${formatRemaining(reading.ageMs)} old`) : "";
 			return {
-				full: `${label("pace")}${paceBar(reading.used, reading.elapsed, burnHeat, dim)} ${burn} ${sign} ${label("target")}${target}${dim(` · resets in ${resets}`)}${age}`,
+				full: `${label("pace")}${paceBar(reading.used, reading.elapsed, heat, dim)} ${burn} ${sign} ${label("target")}${target}${dim(` · resets in ${resets}`)}${age}`,
 				short: `${label("pace")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}${age}`,
 				brief: `${label("pace")}${burn} ${sign} ${label("target")}${target}${dim(` · ${resets}`)}`,
 				bare: `${label("pace")}${sign} ${label("target")}${dim("(")}${target}${dim(")")}`,
